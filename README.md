@@ -1,144 +1,226 @@
-# NotebookLM Skill for Claude Code
+# NotebookLM CLI
 
-A Claude Code skill for automating Google NotebookLM through browser automation (Playwright).
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+Command-line tool for automating Google NotebookLM - search sources, chat with notebooks, generate podcasts, and more.
 
 ## Features
 
-- **Notebook Management**: List, create, delete notebooks
-- **Source Management**: List sources, upload documents, search & import web sources
-- **Smart Chat**: Chat with notebooks, auto-save responses as notes
-- **Audio Generation**: Generate podcast audio from notebooks
-- **State Management**: Handle search state machine (READY/PENDING_RESULTS)
-- **Cross-platform**: Supports Chrome, Safari/WebKit, Firefox
+- **Notebook Management** - List, create, delete notebooks
+- **Source Management** - List, upload, search & import web sources
+- **Smart Chat** - Chat with notebooks, auto-save responses as notes
+- **Audio Generation** - Generate podcast audio from notebooks
+- **State Management** - Automatic handling of search state machine
+- **Cross-platform** - Supports Chrome, WebKit, Firefox
+
+---
 
 ## Installation
 
-### 1. Install Dependencies
+### Method 1: pip install (Recommended)
 
 ```bash
+# Clone the repository
+git clone https://github.com/Superionichuan/notebooklm-skill.git
+cd notebooklm-skill
+
+# Install the package
+pip install -e .
+
+# Install browser (first time only)
+playwright install chromium
+```
+
+### Method 2: Direct use
+
+```bash
+# Clone the repository
+git clone https://github.com/Superionichuan/notebooklm-skill.git
+
+# Install dependencies
 pip install playwright
-playwright install chromium  # or: playwright install webkit
+playwright install chromium
+
+# Run directly
+python notebooklm-skill/src/notebooklm_cli/cli.py --help
 ```
 
-### 2. Install the Skill
+---
 
-Copy this directory to your Claude Code skills folder:
+## Quick Start
+
+### 1. First-time Login
 
 ```bash
-mkdir -p ~/.claude/skills
-cp -r notebooklm ~/.claude/skills/
+nlm login
 ```
 
-### 3. First-time Login
+This opens a browser window. Log in with your Google account - the session will be saved.
 
-Run the login command to authenticate with your Google account:
+### 2. List Your Notebooks
 
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py login
+nlm list
 ```
 
-This will open a browser window. Log in with your Google account, and the session will be saved.
-
-## Usage
-
-### CLI Commands
+### 3. Chat with a Notebook
 
 ```bash
-# List all notebooks
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py list
+nlm smart-chat --notebook "My Notebook" --question "What is the main topic?"
+```
 
-# List sources in a notebook
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py sources --notebook "Notebook Name"
+### 4. Search for New Sources
 
-# Smart chat (recommended)
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py smart-chat \
-    --notebook "Notebook Name" \
-    --question "Your question here"
+```bash
+nlm search-sources --notebook "My Notebook" --query "machine learning"
+```
 
-# Smart chat and save response as note
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py smart-chat \
-    --notebook "Notebook Name" \
-    --question "Your question" \
-    --save-note
+---
 
-# Search for new sources
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py search-sources \
-    --notebook "Notebook Name" \
-    --query "search terms" \
-    --mode fast  # or: deep
-    --source-type web  # or: drive, youtube, link
+## All Commands
 
-# Clear search results
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py clear-search \
-    --notebook "Notebook Name"
+### Notebook Management
 
-# Detect search state
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py detect-search-state \
-    --notebook "Notebook Name"
+| Command | Description | Example |
+|---------|-------------|---------|
+| `nlm list` | List all notebooks | `nlm list` |
+| `nlm create --name "Name"` | Create new notebook | `nlm create --name "Research"` |
+| `nlm delete --notebook "Name"` | Delete a notebook | `nlm delete --notebook "Old Notes"` |
 
-# Generate podcast audio
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py audio \
-    --notebook "Notebook Name" \
-    --output "/path/to/output.mp3"
+### Source Management
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `nlm sources --notebook "Name"` | List all sources | `nlm sources --notebook "Research"` |
+| `nlm upload --file path --notebook "Name"` | Upload document | `nlm upload --file paper.pdf --notebook "Research"` |
+| `nlm delete-source --notebook "Name" --source "Source"` | Delete a source | `nlm delete-source --notebook "Research" --source "paper.pdf"` |
+
+### Search & Import Sources
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `nlm search-sources --notebook "Name" --query "term"` | Search web sources | `nlm search-sources --notebook "Research" --query "AI"` |
+| `nlm search-sources ... --mode deep` | Deep research mode | `nlm search-sources --notebook "Research" --query "AI" --mode deep` |
+| `nlm search-sources ... --source-type drive` | Search Google Drive | `nlm search-sources --notebook "Research" --query "notes" --source-type drive` |
+| `nlm import-result --notebook "Name" --title "Title"` | Import a result | `nlm import-result --notebook "Research" --title "AI Paper"` |
+| `nlm clear-search --notebook "Name"` | Clear search results | `nlm clear-search --notebook "Research"` |
+| `nlm detect-search-state --notebook "Name"` | Check search state | `nlm detect-search-state --notebook "Research"` |
+
+### Chat & Notes
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `nlm smart-chat --notebook "Name" --question "Q"` | Chat with notebook | `nlm smart-chat --notebook "Research" --question "Summarize"` |
+| `nlm smart-chat ... --save-note` | Chat and save as note | `nlm smart-chat --notebook "Research" --question "Summarize" --save-note` |
+| `nlm save-note --notebook "Name" --content "Text"` | Save a note | `nlm save-note --notebook "Research" --content "Important point"` |
+
+### Audio Generation
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `nlm audio --notebook "Name"` | Generate podcast | `nlm audio --notebook "Research"` |
+| `nlm audio --notebook "Name" --output file.mp3` | Save to file | `nlm audio --notebook "Research" --output podcast.mp3` |
+
+### Utility
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `nlm login` | Login to Google | `nlm login` |
+| `nlm detect-mode --notebook "Name"` | Detect UI mode | `nlm detect-mode --notebook "Research"` |
+
+---
+
+## Global Options
+
+```bash
+nlm [command] [options]
+
+Options:
+  --headless          Run without visible browser
+  --user-profile      Use your default Chrome profile (requires closing Chrome)
+  --browser TYPE      Browser engine: chrome (default), webkit, firefox
+  -h, --help          Show help message
 ```
 
 ### Browser Options
 
 ```bash
-# Use isolated Chrome profile (default, doesn't affect your browser)
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py list
+# Default: isolated Chrome profile (doesn't affect your browser)
+nlm list
 
-# Use your default Chrome profile (requires closing other Chrome windows)
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py list --user-profile
-
-# Use WebKit (cross-platform, no conflicts)
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py list --browser webkit
+# Use WebKit (cross-platform, no Chrome conflicts)
+nlm list --browser webkit
 
 # Headless mode (no visible browser)
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py list --headless
+nlm list --headless
+
+# Use your Chrome profile (need to close other Chrome windows)
+nlm list --user-profile
 ```
 
-### Python API
-
-```python
-import sys
-sys.path.insert(0, "~/.claude/skills/notebooklm/scripts")
-from notebooklm import NotebookLMAutomation
-
-nlm = NotebookLMAutomation(headless=False)
-nlm.start()
-
-# List notebooks
-notebooks = nlm.list_notebooks()
-
-# Smart chat
-response = nlm.smart_chat("Notebook Name", "Your question")
-
-# Search sources
-results = nlm.search_sources("Notebook Name", "query", mode="fast")
-
-# Clear search results
-nlm.clear_temp_sources()
-
-# Detect search state
-state = nlm.detect_search_state()  # READY / PENDING_RESULTS / UNKNOWN
-
-nlm.close()
-```
+---
 
 ## Search State Machine
 
 NotebookLM requires handling search results before new searches:
 
 ```
-READY (search box available)
-    ↓ execute search
-PENDING_RESULTS (results waiting)
-    ↓ import or delete results
-READY (back to initial state)
+┌─────────────────────────────────────────┐
+│  READY                                   │
+│  - Search box available                  │
+│  - Can start new search                  │
+└────────────────┬────────────────────────┘
+                 │ execute search
+                 ▼
+┌─────────────────────────────────────────┐
+│  PENDING_RESULTS                         │
+│  - Results waiting                       │
+│  - Must import or clear before new search│
+└────────────────┬────────────────────────┘
+                 │ import or clear
+                 ▼
+┌─────────────────────────────────────────┐
+│  READY (back to initial state)           │
+└─────────────────────────────────────────┘
 ```
 
-The `search-sources` command automatically clears pending results before searching.
+**Note:** `search-sources` automatically clears pending results before searching.
+
+---
+
+## Python API
+
+```python
+from notebooklm_cli import NotebookLMAutomation
+
+# Create instance
+nlm = NotebookLMAutomation(headless=False)
+nlm.start()
+
+# List notebooks
+notebooks = nlm.list_notebooks()
+print(notebooks)
+
+# Smart chat
+response = nlm.smart_chat("My Notebook", "What is the main topic?")
+print(response)
+
+# Search sources
+results = nlm.search_sources("My Notebook", "machine learning", mode="fast")
+print(f"Found {len(results)} results")
+
+# Clear search results
+nlm.clear_temp_sources()
+
+# Check search state
+state = nlm.detect_search_state()  # READY / PENDING_RESULTS / UNKNOWN
+
+# Close
+nlm.close()
+```
+
+---
 
 ## NotebookLM UI Structure
 
@@ -150,30 +232,77 @@ The `search-sources` command automatically clears pending results before searchi
 │    (left)       │     (center)        │     (right)         │
 ├─────────────────┼─────────────────────┼─────────────────────┤
 │ • Source types  │ • Chat with sources │ • Save notes        │
-│ • Research mode │ • View history      │ • Generate audio    │
-│ • Search sources│ • Save as note      │ • Export content    │
+│   - Web         │ • View history      │ • Generate audio    │
+│   - Drive       │ • Save as note      │ • Export content    │
+│   - YouTube     │                     │                     │
+│   - Link        │                     │                     │
+│ • Research mode │                     │                     │
+│   - Fast        │                     │                     │
+│   - Deep        │                     │                     │
+│ • Search box    │                     │                     │
 │ • Import/remove │                     │                     │
 └─────────────────┴─────────────────────┴─────────────────────┘
 ```
 
+---
+
 ## File Structure
 
 ```
-~/.claude/skills/notebooklm/
-├── README.md           # This file
-├── SKILL.md            # Claude Code skill protocol
+notebooklm-skill/
+├── README.md              # This file
+├── SKILL.md               # Claude Code skill protocol
+├── pyproject.toml         # Package configuration
+├── src/
+│   └── notebooklm_cli/
+│       ├── __init__.py    # Package init
+│       └── cli.py         # Main CLI script
 ├── scripts/
-│   └── notebooklm.py   # Main automation script
-├── chrome_profile/     # Isolated Chrome profile (gitignored)
-├── webkit_profile/     # WebKit profile (gitignored)
+│   └── notebooklm.py      # Standalone script (legacy)
 └── .gitignore
 ```
+
+---
 
 ## Requirements
 
 - Python 3.8+
 - Playwright
 - Google account with NotebookLM access
+
+---
+
+## Troubleshooting
+
+### "Browser not installed"
+
+```bash
+playwright install chromium
+```
+
+### "Profile in use" error
+
+Close all Chrome windows, or use WebKit:
+
+```bash
+nlm list --browser webkit
+```
+
+### "Not logged in"
+
+```bash
+nlm login
+```
+
+### Search stuck / can't search
+
+Clear pending results:
+
+```bash
+nlm clear-search --notebook "Your Notebook"
+```
+
+---
 
 ## License
 
@@ -182,3 +311,10 @@ MIT License
 ## Contributing
 
 Issues and PRs welcome!
+
+---
+
+## Links
+
+- [GitHub Repository](https://github.com/Superionichuan/notebooklm-skill)
+- [Google NotebookLM](https://notebooklm.google.com/)
