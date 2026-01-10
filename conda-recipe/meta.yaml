@@ -1,0 +1,48 @@
+{% set name = "notebooklm-cli" %}
+{% set version = "1.0.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://github.com/Superionichuan/notebooklm-skill/archive/refs/tags/v{{ version }}.tar.gz
+  # sha256: <will be filled after creating release>
+
+build:
+  noarch: python
+  number: 0
+  script: {{ PYTHON }} -m pip install . -vv
+  entry_points:
+    - nlm = notebooklm_cli.cli:main
+
+requirements:
+  host:
+    - python >=3.8
+    - pip
+    - setuptools >=61.0
+  run:
+    - python >=3.8
+    - playwright >=1.40.0
+
+test:
+  imports:
+    - notebooklm_cli
+  commands:
+    - nlm --help
+
+about:
+  home: https://github.com/Superionichuan/notebooklm-skill
+  license: MIT
+  license_family: MIT
+  license_file: LICENSE
+  summary: CLI tool for automating Google NotebookLM
+  description: |
+    NotebookLM CLI is a command-line tool for automating Google NotebookLM.
+    Features include notebook management, source search & import, smart chat,
+    and podcast audio generation.
+  dev_url: https://github.com/Superionichuan/notebooklm-skill
+
+extra:
+  recipe-maintainers:
+    - Superionichuan
