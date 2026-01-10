@@ -26,11 +26,11 @@ nlm --headless <命令> [参数]
 source ~/.selfconda && nlm --headless <命令> [参数]
 ```
 
-### 规则 3: 聊天记录同步
+### 规则 3: 数据同步
 ```
-⚠️ nlm 使用隔离的 Chrome Profile，与用户浏览器分开
-⚠️ 但使用同一个 Google 账号，数据通过云端同步
-⚠️ 用户在浏览器刷新页面后可以看到 nlm 的操作记录
+✅ 所有数据通过 Google 账号云同步
+✅ 用户在浏览器刷新页面后可以看到 nlm 的操作记录
+✅ Chat、Sources、Notes 都会同步
 ```
 
 ---
