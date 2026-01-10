@@ -130,14 +130,23 @@ class NotebookLMAutomation:
             print(f"📁 Profile: {user_data_dir}")
 
             # 构建启动参数
+            browser_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ]
+
+            # Linux 上需要禁用沙箱
+            if platform.system() == "Linux":
+                browser_args.extend([
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                ])
+
             launch_args = {
                 "user_data_dir": str(user_data_dir),
                 "headless": self.headless,
-                "args": [
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                ],
+                "args": browser_args,
                 "viewport": {"width": 1280, "height": 800},
             }
 
