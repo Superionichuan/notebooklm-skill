@@ -6,6 +6,7 @@ NotebookLM 自动化脚本
 
 import argparse
 import asyncio
+import platform
 import sys
 from pathlib import Path
 from typing import Optional
@@ -25,10 +26,50 @@ SKILL_DIR = Path.home() / ".claude" / "skills" / "notebooklm"
 ISOLATED_CHROME_PROFILE = SKILL_DIR / "chrome_profile"
 ISOLATED_WEBKIT_PROFILE = SKILL_DIR / "webkit_profile"
 ISOLATED_FIREFOX_PROFILE = SKILL_DIR / "firefox_profile"
-USER_CHROME_PROFILE = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
 
-# macOS Chrome 路径
-CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+# 跨平台 Chrome 路径检测
+def get_chrome_path() -> Optional[str]:
+    """获取 Chrome 可执行文件路径，如果不存在则返回 None（使用 Playwright 内置 Chromium）"""
+    system = platform.system()
+
+    if system == "Darwin":  # macOS
+        paths = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        ]
+    elif system == "Windows":
+        paths = [
+            Path.home() / "AppData/Local/Google/Chrome/Application/chrome.exe",
+            "C:/Program Files/Google/Chrome/Application/chrome.exe",
+            "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+        ]
+    else:  # Linux
+        paths = [
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/snap/bin/chromium",
+        ]
+
+    for p in paths:
+        if Path(p).exists():
+            return str(p)
+    return None  # 使用 Playwright 内置 Chromium
+
+def get_user_chrome_profile() -> Path:
+    """获取用户 Chrome Profile 路径"""
+    system = platform.system()
+
+    if system == "Darwin":  # macOS
+        return Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+    elif system == "Windows":
+        return Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "User Data"
+    else:  # Linux
+        return Path.home() / ".config" / "google-chrome"
+
+CHROME_PATH = get_chrome_path()
+USER_CHROME_PROFILE = get_user_chrome_profile()
 
 
 class NotebookLMAutomation:
@@ -73,7 +114,7 @@ class NotebookLMAutomation:
             )
 
         else:
-            # Chrome（默认）
+            # Chrome/Chromium（默认）
             if self.use_user_profile:
                 user_data_dir = USER_CHROME_PROFILE
                 print(f"🔵 使用你的默认 Chrome Profile")
@@ -81,21 +122,30 @@ class NotebookLMAutomation:
             else:
                 user_data_dir = ISOLATED_CHROME_PROFILE
                 user_data_dir.mkdir(parents=True, exist_ok=True)
-                print(f"🔵 使用隔离 Chrome Profile")
+                if CHROME_PATH:
+                    print(f"🔵 使用隔离 Chrome Profile")
+                else:
+                    print(f"🔵 使用 Playwright 内置 Chromium")
 
             print(f"📁 Profile: {user_data_dir}")
 
-            self.context = self.playwright.chromium.launch_persistent_context(
-                user_data_dir=str(user_data_dir),
-                headless=self.headless,
-                executable_path=CHROME_PATH,
-                args=[
+            # 构建启动参数
+            launch_args = {
+                "user_data_dir": str(user_data_dir),
+                "headless": self.headless,
+                "args": [
                     "--disable-blink-features=AutomationControlled",
                     "--no-first-run",
                     "--no-default-browser-check",
                 ],
-                viewport={"width": 1280, "height": 800},
-            )
+                "viewport": {"width": 1280, "height": 800},
+            }
+
+            # 如果有本地 Chrome，使用它；否则使用 Playwright 内置 Chromium
+            if CHROME_PATH:
+                launch_args["executable_path"] = CHROME_PATH
+
+            self.context = self.playwright.chromium.launch_persistent_context(**launch_args)
 
         # 获取或创建页面
         if self.context.pages:

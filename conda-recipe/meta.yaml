@@ -7,7 +7,7 @@ package:
 
 source:
   url: https://github.com/Superionichuan/notebooklm-skill/archive/refs/tags/v{{ version }}.tar.gz
-  # sha256: <will be filled after creating release>
+  sha256: b2492f2819a5b8a3c89fd7a2d0003270d5e991c7dff49c2aa137ba432f40bfa0
 
 build:
   noarch: python
