@@ -8,24 +8,29 @@ allowed-tools: Read, Bash, Write, Glob
 
 ## ⚠️ 强制规则 (MANDATORY)
 
-### 规则 1: 使用 NLM 必须通过脚本
+### 规则 1: 使用 nlm 命令
 ```
 🚫 禁止: 手动描述操作步骤让用户执行
-🚫 禁止: 假装已完成操作但未调用脚本
-✅ 必须: 调用 ~/.claude/skills/notebooklm/scripts/notebooklm.py
-✅ 必须: 检查脚本输出确认操作结果
+🚫 禁止: 假装已完成操作但未调用命令
+✅ 必须: 使用 nlm 命令行工具
+✅ 必须: 检查命令输出确认操作结果
+✅ 必须: 使用 --headless 参数进行无头操作
 ```
 
 ### 规则 2: CLI 命令格式
 ```bash
 # 基础格式 - 所有命令必须这样调用
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py <命令> [参数]
+nlm --headless <命令> [参数]
+
+# Linux 系统需要先激活 conda 环境
+source ~/.selfconda && nlm --headless <命令> [参数]
 ```
 
-### 规则 3: 笔记本名称
+### 规则 3: 聊天记录同步
 ```
-默认笔记本: "00.two-step free energy Thermodynamic integration & MACE & Lammps"
-笔记本 ID: e91d4a25-773a-4e31-b248-09824a7a0e56
+⚠️ nlm 使用隔离的 Chrome Profile，与用户浏览器分开
+⚠️ 但使用同一个 Google 账号，数据通过云端同步
+⚠️ 用户在浏览器刷新页面后可以看到 nlm 的操作记录
 ```
 
 ---
@@ -133,8 +138,7 @@ python ~/.claude/skills/notebooklm/scripts/notebooklm.py <命令> [参数]
 
 ### 检测当前搜索状态
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py detect-search-state \
-    --notebook "笔记本名"
+nlm --headless detect-search-state --notebook "笔记本名"
 # 返回: READY / PENDING_RESULTS / UNKNOWN
 ```
 
@@ -146,7 +150,7 @@ search-sources 命令会自动清除待处理的结果，但如果手动操作�
 
 ### 步骤 1: 执行搜索
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py search-sources \
+nlm --headless search-sources \
     --notebook "笔记本名" \
     --query "搜索词" \
     --mode fast \          # fast(快速) 或 deep(深度研究)
@@ -156,30 +160,30 @@ python ~/.claude/skills/notebooklm/scripts/notebooklm.py search-sources \
 ### 步骤 2: 查看搜索结果（搜索完成后自动执行）
 ```bash
 # 如果需要手动查看
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py view-results \
+nlm --headless view-results \
     --notebook "笔记本名"
 ```
 
 ### 步骤 3: 导入或移除结果
 ```bash
 # 导入想要的结果
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py import-result \
+nlm --headless import-result \
     --notebook "笔记本名" \
     --title "结果标题（部分匹配）"
 
 # 移除不需要的结果
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py remove-result \
+nlm --headless remove-result \
     --notebook "笔记本名" \
     --title "结果标题"
 
 # 或清除所有临时结果
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py clear-search \
+nlm --headless clear-search \
     --notebook "笔记本名"
 ```
 
 ### 步骤 4: 验证导入成功
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py sources \
+nlm --headless sources \
     --notebook "笔记本名"
 ```
 
@@ -233,14 +237,14 @@ python ~/.claude/skills/notebooklm/scripts/notebooklm.py sources \
 
 ### 1. 智能聊天（推荐，自动处理 UI 模式切换）
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py smart-chat \
+nlm --headless smart-chat \
     --notebook "00.two-step free energy Thermodynamic integration & MACE & Lammps" \
     --question "请详细解释 Two-Step NeTI 方法的 W_irr 和 W_rev 计算"
 ```
 
 ### 2. 智能聊天并保存回答为笔记
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py smart-chat \
+nlm --headless smart-chat \
     --notebook "笔记本名" \
     --question "问题内容" \
     --save-note
@@ -248,7 +252,7 @@ python ~/.claude/skills/notebooklm/scripts/notebooklm.py smart-chat \
 
 ### 3. 从 Web 搜索新来源（快速模式）
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py search-sources \
+nlm --headless search-sources \
     --notebook "笔记本名" \
     --query "MACE machine learning potential" \
     --mode fast \
@@ -257,7 +261,7 @@ python ~/.claude/skills/notebooklm/scripts/notebooklm.py search-sources \
 
 ### 4. 从 Google Drive 搜索（深度研究）
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py search-sources \
+nlm --headless search-sources \
     --notebook "笔记本名" \
     --query "thermodynamic integration" \
     --mode deep \
@@ -266,40 +270,40 @@ python ~/.claude/skills/notebooklm/scripts/notebooklm.py search-sources \
 
 ### 5. 导入搜索到的结果
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py import-result \
+nlm --headless import-result \
     --notebook "笔记本名" \
     --title "Reversible Scaling"  # 部分匹配即可
 ```
 
 ### 6. 清除所有临时搜索结果
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py clear-search \
+nlm --headless clear-search \
     --notebook "笔记本名"
 ```
 
 ### 7. 列出所有已导入的源
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py sources \
+nlm --headless sources \
     --notebook "00.two-step free energy Thermodynamic integration & MACE & Lammps"
 ```
 
 ### 8. 删除已导入的源
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py delete-source \
+nlm --headless delete-source \
     --notebook "笔记本名" \
     --source "源名称"
 ```
 
 ### 9. 上传本地文档
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py upload \
+nlm --headless upload \
     --file "/tmp/document.pdf" \
     --notebook "笔记本名"
 ```
 
 ### 10. 保存研究笔记
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py save-note \
+nlm --headless save-note \
     --notebook "笔记本名" \
     --title "fscale vs scale 总结" \
     --content "Step 1 和 Step 2 都使用 fscale..."
@@ -307,14 +311,14 @@ python ~/.claude/skills/notebooklm/scripts/notebooklm.py save-note \
 
 ### 11. 生成播客音频
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py audio \
+nlm --headless audio \
     --notebook "笔记本名" \
     --output "/tmp/podcast.mp3"
 ```
 
 ### 12. 列出所有笔记本
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py list
+nlm --headless list
 ```
 
 ---
@@ -322,10 +326,7 @@ python ~/.claude/skills/notebooklm/scripts/notebooklm.py list
 ## 🐍 Python API（高级用法）
 
 ```python
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path.home() / ".claude/skills/notebooklm/scripts"))
-from notebooklm import NotebookLMAutomation
+from notebooklm_cli import NotebookLMAutomation
 
 # 创建实例
 nlm = NotebookLMAutomation(headless=False)
@@ -413,7 +414,7 @@ nlm.close()
 3. **验证结果**: 对于重要操作，再次查询确认
    ```bash
    # 搜索并导入后验证
-   python ~/.claude/skills/notebooklm/scripts/notebooklm.py sources --notebook "笔记本名"
+   nlm --headless sources --notebook "笔记本名"
    ```
 
 ---
@@ -429,13 +430,24 @@ nlm.close()
 
 ---
 
-## 📁 文件位置
+## 📁 安装与文件位置
 
+### 安装方式
+```bash
+# 从 GitHub 安装
+pip install git+https://github.com/Superionichuan/notebooklm-skill.git
+
+# 安装浏览器
+playwright install chromium
 ```
+
+### 文件位置
+```
+命令位置: nlm (pip 安装后全局可用)
+Python 包: notebooklm_cli
+
 ~/.claude/skills/notebooklm/
 ├── SKILL.md                    # 本文档
-├── scripts/
-│   └── notebooklm.py          # 主脚本（CLI + API）
 ├── chrome_profile/             # 隔离的 Chrome Profile（已登录）
 ├── webkit_profile/             # Safari/WebKit Profile
 └── firefox_profile/            # Firefox Profile
@@ -448,25 +460,25 @@ nlm.close()
 ### 问题: 超时或找不到元素
 ```bash
 # 使用非无头模式调试
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py smart-chat \
+nlm --headless smart-chat \
     --notebook "笔记本名" --question "测试"
 ```
 
 ### 问题: Chrome 冲突
 ```bash
 # 使用 Safari/WebKit 引擎（不会和 Chrome 冲突）
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py smart-chat \
+nlm --headless smart-chat \
     --notebook "笔记本名" --question "测试" --browser safari
 ```
 
 ### 问题: 需要重新登录
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py login
+nlm --headless login
 ```
 
 ### 问题: 搜索结果没有清除，无法新搜索
 ```bash
-python ~/.claude/skills/notebooklm/scripts/notebooklm.py clear-search \
+nlm --headless clear-search \
     --notebook "笔记本名"
 ```
 
