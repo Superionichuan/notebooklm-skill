@@ -1,0 +1,25 @@
+# Browser profiles (contain login credentials)
+chrome_profile/
+webkit_profile/
+firefox_profile/
+browser_data/
+
+# Auth files
+auth/
+
+# Debug files
+*.png
+screenshots/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
