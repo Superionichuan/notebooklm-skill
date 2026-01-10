@@ -549,6 +549,23 @@ class NotebookLMAutomation:
         try:
             self.page.wait_for_timeout(3000)
 
+            # UI 元素过滤列表 - 这些不是真正的源
+            ui_elements = [
+                'add', 'more_vert', 'search', 'close', 'arrow', 'keyboard',
+                'thumb_up', 'thumb_down', 'check', 'edit', 'delete', 'remove',
+                'language', 'drive_pdf', 'web', 'youtube', 'link', 'article',
+                'markdown', 'pdf', 'folder', 'settings', 'menu', 'expand',
+                '🔎', '➕', '✓', '✕', '⋮',
+                'Sources', '来源', 'Add source', '添加来源', 'Notes', '笔记',
+                'Studio', 'Chat', '聊天', 'Deep Research', '获取深度报告',
+                '新来源', 'PRO', '全部', 'All', 'Select all', '全选',
+            ]
+
+            # UI 提示语过滤 - 包含这些关键词的整行都过滤掉
+            ui_prompts = [
+                '试用', '获取深度报告', '新来源', 'Try', 'Get deep',
+            ]
+
             # NotebookLM 源通常在左侧面板
             # 尝试多种选择器定位源列表
             source_selectors = [
@@ -556,7 +573,6 @@ class NotebookLMAutomation:
                 '.source-item',
                 '[role="listitem"]',
                 'div[class*="source"]',
-                # 源通常显示为可点击的文档名称
                 'button[class*="source"]',
             ]
 
@@ -569,8 +585,23 @@ class NotebookLMAutomation:
                             if text and len(text) > 2:
                                 # 提取第一行作为源名称
                                 first_line = text.split('\n')[0].strip()
+                                # 过滤 UI 元素
                                 if first_line and first_line not in sources:
-                                    sources.append(first_line)
+                                    # 检查是否是 UI 元素
+                                    is_ui = False
+                                    for ui in ui_elements:
+                                        if first_line.lower() == ui.lower() or first_line == ui:
+                                            is_ui = True
+                                            break
+                                    # 检查是否包含 UI 提示语
+                                    if not is_ui:
+                                        for prompt in ui_prompts:
+                                            if prompt.lower() in first_line.lower():
+                                                is_ui = True
+                                                break
+                                    # 过滤太短的（通常是图标文字）
+                                    if not is_ui and len(first_line) > 5:
+                                        sources.append(first_line)
                         except:
                             pass
                     if sources:
@@ -586,14 +617,32 @@ class NotebookLMAutomation:
                         lines = panel_text.split('\n')
                         for line in lines:
                             line = line.strip()
-                            # 过滤掉按钮和标题
-                            skip_words = ['Sources', '来源', 'Add source', '添加来源', 'more_vert',
-                                        'add', 'Notes', '笔记', 'Studio', 'Chat', '聊天']
-                            if line and len(line) > 3 and line not in skip_words:
-                                # 检查是否是文件名模式
-                                if '.' in line or len(line) > 10:
-                                    if line not in sources:
-                                        sources.append(line)
+                            # 过滤 UI 元素
+                            if not line or len(line) <= 5:
+                                continue
+
+                            is_ui = False
+                            for ui in ui_elements:
+                                if line.lower() == ui.lower() or line == ui:
+                                    is_ui = True
+                                    break
+                                # 也检查是否以 UI 元素开头
+                                if line.lower().startswith(ui.lower() + ' '):
+                                    is_ui = True
+                                    break
+
+                            # 检查是否包含 UI 提示语
+                            if not is_ui:
+                                for prompt in ui_prompts:
+                                    if prompt.lower() in line.lower():
+                                        is_ui = True
+                                        break
+
+                            if not is_ui and line not in sources:
+                                # 检查是否像是文件名/标题模式
+                                if ('.' in line or '-' in line or len(line) > 15 or
+                                    any(ext in line.lower() for ext in ['.pdf', '.docx', '.txt', '.md'])):
+                                    sources.append(line)
                 except Exception as e:
                     print(f"解析左侧面板时出错: {e}")
 
