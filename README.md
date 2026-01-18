@@ -3,77 +3,165 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Command-line tool for automating Google NotebookLM - search sources, chat with notebooks, generate podcasts, and more.
+Command-line tool for automating Google NotebookLM using **Chrome DevTools Protocol (CDP)**. Search sources, chat with notebooks, generate podcasts - all through CLI or Python API.
 
-## Features
+## Highlights
 
-- **Notebook Management** - List, create, delete notebooks
-- **Source Management** - List, upload, search & import web sources
-- **Smart Chat** - Chat with notebooks, auto-save responses as notes
-- **Audio Generation** - Generate podcast audio from notebooks
-- **State Management** - Automatic handling of search state machine
-- **Cross-platform** - Supports Chrome, WebKit, Firefox
+- **CDP Architecture** - Connects to existing Chrome via DevTools Protocol, no profile conflicts
+- **Text Stability Detection** - Ensures complete responses (waits for text to stabilize before returning)
+- **Multi-window Safe** - Multiple CLI instances can run simultaneously
+- **Persistent Login** - Login once, stay logged in across sessions
+- **Cross-platform** - macOS, Linux, Windows support
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    CDP Architecture                              │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   nlm-cdp.sh / nlm wrapper                                       │
+│        │                                                         │
+│        ▼                                                         │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │  Chrome CDP Server (port 9222/9333)                      │   │
+│   │  - Persistent browser instance                           │   │
+│   │  - Shared across all nlm calls                           │   │
+│   │  - Login state preserved                                 │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│        │                                                         │
+│        ▼                                                         │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │  notebooklm_cli (Playwright)                             │   │
+│   │  - Connects via --cdp-url                                │   │
+│   │  - No browser launch overhead                            │   │
+│   │  - Text stability detection for complete responses       │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
 ## Installation
 
-### Method 1: pip install (Recommended)
+### Step 1: Clone & Install
 
 ```bash
-# Clone the repository
 git clone https://github.com/Superionichuan/notebooklm-skill.git
 cd notebooklm-skill
 
-# Install the package
+# Install package
 pip install -e .
 
-# Install browser (first time only)
+# Install Playwright browsers
 playwright install chromium
 ```
 
-### Method 2: Direct use
+### Step 2: Setup CDP Wrapper
+
+**macOS:**
+```bash
+# Copy the CDP wrapper script
+cp nlm-cdp.sh ~/.local/bin/nlm-cdp
+chmod +x ~/.local/bin/nlm-cdp
+
+# Or use directly
+./nlm-cdp.sh --headless list
+```
+
+**Linux (with display):**
+```bash
+# Create wrapper script
+cat > ~/bin/nlm << 'EOF'
+#!/bin/bash
+CDP_PORT=9222
+CDP_URL="http://127.0.0.1:$CDP_PORT"
+REAL_NLM="$(which nlm.real 2>/dev/null || which nlm)"
+CHROME_PROFILE="$HOME/.claude/skills/notebooklm/chrome_profile"
+
+# Start Chrome CDP if not running
+if ! curl -s "$CDP_URL/json/version" > /dev/null 2>&1; then
+    echo "Starting Chrome CDP..."
+    DISPLAY=:0 nohup google-chrome \
+        --remote-debugging-port=$CDP_PORT \
+        --user-data-dir="$CHROME_PROFILE" \
+        --no-first-run https://notebooklm.google.com &
+    sleep 3
+fi
+
+exec $REAL_NLM --cdp-url "$CDP_URL" --no-auto-instance "$@"
+EOF
+chmod +x ~/bin/nlm
+```
+
+### Step 3: First-time Login
 
 ```bash
-# Clone the repository
-git clone https://github.com/Superionichuan/notebooklm-skill.git
+# This opens browser - login with Google account
+nlm login
 
-# Install dependencies
-pip install playwright
-playwright install chromium
-
-# Run directly
-python notebooklm-skill/src/notebooklm_cli/cli.py --help
+# Or with CDP wrapper
+./nlm-cdp.sh login
 ```
 
 ---
 
 ## Quick Start
 
-### 1. First-time Login
-
 ```bash
-nlm login
+# List notebooks
+nlm --headless list
+
+# Chat with notebook (with text stability detection)
+nlm --headless smart-chat \
+    --notebook "My Research" \
+    --question "Summarize the key findings"
+
+# Search for sources
+nlm --headless search-sources \
+    --notebook "My Research" \
+    --query "machine learning papers"
+
+# Generate podcast
+nlm --headless audio --notebook "My Research" --output podcast.mp3
 ```
 
-This opens a browser window. Log in with your Google account - the session will be saved.
+---
 
-### 2. List Your Notebooks
+## Text Stability Detection (v2.0)
 
-```bash
-nlm list
+The `smart-chat` command now uses **text stability detection** to ensure complete responses:
+
+```
+Response Detection Flow:
+┌─────────────────────────────────────────────────────────────────┐
+│ Phase 1: Wait for generation start (up to 60s)                  │
+│   └── Detects "Stop generating" button appearing                │
+├─────────────────────────────────────────────────────────────────┤
+│ Phase 2: Wait for completion (up to max_wait, default 480s)     │
+│   └── Text stable for 5 consecutive seconds = complete          │
+├─────────────────────────────────────────────────────────────────┤
+│ Phase 3: Final verification (5s)                                │
+│   └── Confirms text is no longer changing                       │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### 3. Chat with a Notebook
+### Timeout Configuration
 
 ```bash
-nlm smart-chat --notebook "My Notebook" --question "What is the main topic?"
+# Default: 8 minutes max wait
+nlm --headless smart-chat --notebook "..." --question "..."
+
+# Extended: 10 minutes for complex questions
+nlm --headless smart-chat --notebook "..." --question "..." --max-wait 600
 ```
 
-### 4. Search for New Sources
-
-```bash
-nlm search-sources --notebook "My Notebook" --query "machine learning"
+**Important for Claude Code users:** Set Bash timeout to at least 600 seconds (10 minutes):
+```
+Bash timeout: 600000 (10 minutes recommended)
 ```
 
 ---
@@ -82,110 +170,61 @@ nlm search-sources --notebook "My Notebook" --query "machine learning"
 
 ### Notebook Management
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `nlm list` | List all notebooks | `nlm list` |
-| `nlm create --name "Name"` | Create new notebook | `nlm create --name "Research"` |
-| `nlm delete --notebook "Name"` | Delete a notebook | `nlm delete --notebook "Old Notes"` |
+| Command | Description |
+|---------|-------------|
+| `nlm list` | List all notebooks |
+| `nlm create --name "Name"` | Create new notebook |
+| `nlm delete --notebook "Name"` | Delete notebook |
 
 ### Source Management
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `nlm sources --notebook "Name"` | List all sources | `nlm sources --notebook "Research"` |
-| `nlm upload --file path --notebook "Name"` | Upload document | `nlm upload --file paper.pdf --notebook "Research"` |
-| `nlm delete-source --notebook "Name" --source "Source"` | Delete a source | `nlm delete-source --notebook "Research" --source "paper.pdf"` |
+| Command | Description |
+|---------|-------------|
+| `nlm sources --notebook "Name"` | List sources in notebook |
+| `nlm upload --file path --notebook "Name"` | Upload document |
+| `nlm delete-source --notebook "Name" --source "Name"` | Delete source |
 
-### Search & Import Sources
+### Search & Import
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `nlm search-sources --notebook "Name" --query "term"` | Search web sources | `nlm search-sources --notebook "Research" --query "AI"` |
-| `nlm search-sources ... --mode deep` | Deep research mode | `nlm search-sources --notebook "Research" --query "AI" --mode deep` |
-| `nlm search-sources ... --source-type drive` | Search Google Drive | `nlm search-sources --notebook "Research" --query "notes" --source-type drive` |
-| `nlm import-result --notebook "Name" --title "Title"` | Import a result | `nlm import-result --notebook "Research" --title "AI Paper"` |
-| `nlm clear-search --notebook "Name"` | Clear search results | `nlm clear-search --notebook "Research"` |
-| `nlm detect-search-state --notebook "Name"` | Check search state | `nlm detect-search-state --notebook "Research"` |
+| Command | Description |
+|---------|-------------|
+| `nlm search-sources --notebook "..." --query "..."` | Search web |
+| `nlm search-sources ... --mode deep` | Deep research |
+| `nlm search-sources ... --source-type drive` | Search Drive |
+| `nlm import-result --notebook "..." --title "..."` | Import result |
+| `nlm clear-search --notebook "..."` | Clear results |
 
 ### Chat & Notes
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `nlm smart-chat --notebook "Name" --question "Q"` | Chat with notebook | `nlm smart-chat --notebook "Research" --question "Summarize"` |
-| `nlm smart-chat ... --save-note` | Chat and save as note | `nlm smart-chat --notebook "Research" --question "Summarize" --save-note` |
-| `nlm save-note --notebook "Name" --content "Text"` | Save a note | `nlm save-note --notebook "Research" --content "Important point"` |
+| Command | Description |
+|---------|-------------|
+| `nlm smart-chat --notebook "..." --question "..."` | Chat (recommended) |
+| `nlm smart-chat ... --save-note` | Chat + save as note |
+| `nlm smart-chat ... --max-wait 600` | Extended timeout |
+| `nlm save-note --notebook "..." --content "..."` | Save note |
 
-### Audio Generation
+### Audio
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `nlm audio --notebook "Name"` | Generate podcast | `nlm audio --notebook "Research"` |
-| `nlm audio --notebook "Name" --output file.mp3` | Save to file | `nlm audio --notebook "Research" --output podcast.mp3` |
-
-### Utility
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `nlm login` | Login to Google | `nlm login` |
-| `nlm detect-mode --notebook "Name"` | Detect UI mode | `nlm detect-mode --notebook "Research"` |
+| Command | Description |
+|---------|-------------|
+| `nlm audio --notebook "Name"` | Generate podcast |
+| `nlm audio ... --output file.mp3` | Save to file |
 
 ---
 
 ## Global Options
 
 ```bash
-nlm [command] [options]
+nlm [OPTIONS] COMMAND [ARGS]
 
 Options:
-  --headless          Run without visible browser
-  --user-profile      Use your default Chrome profile (requires closing Chrome)
-  --browser TYPE      Browser engine: chrome (default), webkit, firefox
-  -h, --help          Show help message
+  --headless              Run without visible browser
+  --cdp-url URL           Connect to Chrome CDP (e.g., http://127.0.0.1:9222)
+  --no-auto-instance      Don't auto-start browser instance
+  --browser TYPE          Browser: chrome (default), webkit, firefox
+  --timeout SECONDS       Global timeout for page operations
+  -h, --help              Show help
 ```
-
-### Browser Options
-
-```bash
-# Default: isolated Chrome profile (doesn't affect your browser)
-nlm list
-
-# Use WebKit (cross-platform, no Chrome conflicts)
-nlm list --browser webkit
-
-# Headless mode (no visible browser)
-nlm list --headless
-
-# Use your Chrome profile (need to close other Chrome windows)
-nlm list --user-profile
-```
-
----
-
-## Search State Machine
-
-NotebookLM requires handling search results before new searches:
-
-```
-┌─────────────────────────────────────────┐
-│  READY                                   │
-│  - Search box available                  │
-│  - Can start new search                  │
-└────────────────┬────────────────────────┘
-                 │ execute search
-                 ▼
-┌─────────────────────────────────────────┐
-│  PENDING_RESULTS                         │
-│  - Results waiting                       │
-│  - Must import or clear before new search│
-└────────────────┬────────────────────────┘
-                 │ import or clear
-                 ▼
-┌─────────────────────────────────────────┐
-│  READY (back to initial state)           │
-└─────────────────────────────────────────┘
-```
-
-**Note:** `search-sources` automatically clears pending results before searching.
 
 ---
 
@@ -194,54 +233,37 @@ NotebookLM requires handling search results before new searches:
 ```python
 from notebooklm_cli import NotebookLMAutomation
 
-# Create instance
-nlm = NotebookLMAutomation(headless=False)
+# Create instance (CDP mode recommended)
+nlm = NotebookLMAutomation(headless=True)
 nlm.start()
 
 # List notebooks
 notebooks = nlm.list_notebooks()
-print(notebooks)
 
-# Smart chat
-response = nlm.smart_chat("My Notebook", "What is the main topic?")
-print(response)
+# Smart chat with text stability detection
+response = nlm.smart_chat(
+    notebook_name="My Research",
+    question="What are the key findings?",
+    max_wait=480  # 8 minutes
+)
+print(f"Response length: {len(response)} chars")
 
 # Search sources
-results = nlm.search_sources("My Notebook", "machine learning", mode="fast")
-print(f"Found {len(results)} results")
+results = nlm.search_sources(
+    notebook_name="My Research",
+    query="machine learning",
+    mode="fast",  # or "deep"
+    source_type="web"  # or "drive", "youtube", "link"
+)
+
+# Check search state
+state = nlm.detect_search_state()  # READY / PENDING_RESULTS
 
 # Clear search results
 nlm.clear_temp_sources()
 
-# Check search state
-state = nlm.detect_search_state()  # READY / PENDING_RESULTS / UNKNOWN
-
 # Close
 nlm.close()
-```
-
----
-
-## NotebookLM UI Structure
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      NotebookLM Interface                    │
-├─────────────────┬─────────────────────┬─────────────────────┤
-│   SOURCE Panel  │    Chat Panel       │   STUDIO Panel      │
-│    (left)       │     (center)        │     (right)         │
-├─────────────────┼─────────────────────┼─────────────────────┤
-│ • Source types  │ • Chat with sources │ • Save notes        │
-│   - Web         │ • View history      │ • Generate audio    │
-│   - Drive       │ • Save as note      │ • Export content    │
-│   - YouTube     │                     │                     │
-│   - Link        │                     │                     │
-│ • Research mode │                     │                     │
-│   - Fast        │                     │                     │
-│   - Deep        │                     │                     │
-│ • Search box    │                     │                     │
-│ • Import/remove │                     │                     │
-└─────────────────┴─────────────────────┴─────────────────────┘
 ```
 
 ---
@@ -250,17 +272,75 @@ nlm.close()
 
 ```
 notebooklm-skill/
-├── README.md              # This file
-├── SKILL.md               # Claude Code skill protocol
-├── pyproject.toml         # Package configuration
+├── README.md               # This file
+├── SKILL.md                # Claude Code skill protocol
+├── QUICK_START.md          # Quick start guide
+├── nlm-cdp.sh              # macOS CDP wrapper
+├── pyproject.toml          # Package config
 ├── src/
 │   └── notebooklm_cli/
-│       ├── __init__.py    # Package init
-│       └── cli.py         # Main CLI script
+│       ├── __init__.py
+│       └── cli.py          # Main CLI (with text stability detection)
 ├── scripts/
-│   └── notebooklm.py      # Standalone script (legacy)
-└── .gitignore
+│   └── notebooklm.py       # Standalone script
+└── chrome_profile/         # Isolated Chrome profile (gitignored)
 ```
+
+---
+
+## Troubleshooting
+
+### "Cannot connect to Chrome CDP"
+
+Start Chrome with CDP enabled:
+```bash
+# macOS
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+    --remote-debugging-port=9333 \
+    --user-data-dir="$HOME/.claude/skills/notebooklm/chrome_profile" \
+    --no-first-run https://notebooklm.google.com
+
+# Linux
+google-chrome --remote-debugging-port=9222 \
+    --user-data-dir="$HOME/.claude/skills/notebooklm/chrome_profile" \
+    --no-first-run https://notebooklm.google.com
+```
+
+### "Profile lock" error
+
+```bash
+rm -f ~/.claude/skills/notebooklm/chrome_profile/Singleton*
+```
+
+### Response truncated
+
+Increase timeout:
+```bash
+nlm --headless smart-chat --notebook "..." --question "..." --max-wait 600
+```
+
+### "Not logged in"
+
+```bash
+nlm login  # Opens browser for Google login
+```
+
+---
+
+## Changelog
+
+### v2.0.0 (2025-01-18)
+- **CDP Architecture** - Connect to existing Chrome via DevTools Protocol
+- **Text Stability Detection** - Wait for response text to stabilize before returning
+- **`--max-wait` parameter** - Configurable wait time (default 480s / 8 minutes)
+- **`_get_latest_response_text()`** - New helper for reliable response extraction
+- **Multi-window safe** - Multiple CLI instances work simultaneously
+- **Enhanced timeout docs** - Clear timeout hierarchy for Claude Code integration
+
+### v1.x
+- Initial release with Playwright automation
+- Source search workflow
+- Audio generation
 
 ---
 
@@ -268,49 +348,14 @@ notebooklm-skill/
 
 - Python 3.8+
 - Playwright
+- Google Chrome (for CDP mode)
 - Google account with NotebookLM access
-
----
-
-## Troubleshooting
-
-### "Browser not installed"
-
-```bash
-playwright install chromium
-```
-
-### "Profile in use" error
-
-Close all Chrome windows, or use WebKit:
-
-```bash
-nlm list --browser webkit
-```
-
-### "Not logged in"
-
-```bash
-nlm login
-```
-
-### Search stuck / can't search
-
-Clear pending results:
-
-```bash
-nlm clear-search --notebook "Your Notebook"
-```
 
 ---
 
 ## License
 
 MIT License
-
-## Contributing
-
-Issues and PRs welcome!
 
 ---
 
