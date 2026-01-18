@@ -6,6 +6,39 @@ allowed-tools: Read, Bash, Write, Glob
 
 # NotebookLM Skill - Claude Code 操作协议
 
+## 🎯 智能流程判断（首先阅读）
+
+### 何时需要 `list`？
+```
+❌ 用户已经明确说了笔记本名称 → 不需要 list，直接操作
+❌ 当前会话已经执行过 list → 不需要重复
+✅ 用户说"笔记本"但没指定名称 → 需要 list
+✅ 第一次操作，不确定有哪些笔记本 → 需要 list
+```
+
+### 快速路径（优先使用）
+```
+用户: "问问 xgent-LLM 笔记本关于 xxx"
+→ 直接执行: nlm --headless smart-chat --notebook "03.xgent-LLM" --question "xxx"
+  （不需要先 list）
+
+用户: "查一下笔记本里有什么"
+→ 需要先 list，因为不知道用户指哪个笔记本
+
+用户: "用 NotebookLM 获取指导"
+→ 根据上下文判断笔记本，如果不确定则 list
+```
+
+### 常用笔记本速查
+| 关键词 | 笔记本名称 |
+|--------|-----------|
+| xgent、LLM、Agent | 03.xgent-LLM |
+| 自由能、MACE、LAMMPS | 00.two-step free energy... |
+| 月球、Fe | 01.月球土壤中 Fe的歧化反应 |
+| 地幔、各向异性 | 02.下地幔各向异性NC论文回稿 |
+
+---
+
 ## ⚠️ 强制规则 (MANDATORY)
 
 ### 规则 1: 使用 nlm 命令
@@ -19,18 +52,58 @@ allowed-tools: Read, Bash, Write, Glob
 
 ### 规则 2: CLI 命令格式
 ```bash
-# 基础格式 - 所有命令必须这样调用
-nlm --headless <命令> [参数]
+# Mac 系统 - 使用 CDP 模式（多窗口安全）
+~/.claude/skills/notebooklm/nlm-cdp.sh --headless <命令> [参数]
 
-# Linux 系统需要先激活 conda 环境
+# Linux 系统 - 需要先激活 conda 环境
 source ~/.selfconda && nlm --headless <命令> [参数]
 ```
+
+**为什么用 nlm-cdp.sh？**
+- 自动连接到已运行的 Chrome（通过 CDP）
+- 多个 Claude Code 窗口可以同时调用，不会冲突
+- 如果 Chrome 没运行，会自动启动
 
 ### 规则 3: 数据同步
 ```
 ✅ 所有数据通过 Google 账号云同步
 ✅ 用户在浏览器刷新页面后可以看到 nlm 的操作记录
 ✅ Chat、Sources、Notes 都会同步
+```
+
+### 规则 4: 对话历史理解（重要！）
+```
+📌 NotebookLM 对话历史 = 服务器端保存，永久存在
+📌 NotebookLM AI 记忆 = 每次对话无状态，不会"记住"之前的对话
+
+✅ 对话记录保存在 NotebookLM 服务器（可用 chat-history 命令查看）
+✅ 不同 Claude Code 窗口、不同设备，只要同一 Google 账号都能看到相同记录
+❌ NotebookLM AI 不会主动"回忆"之前的对话内容
+❌ 问它"我们之前聊了什么"会得到"我无法访问历史记录"的回答
+
+查看对话历史的正确方式:
+  nlm --headless chat-history --notebook "笔记本名"
+```
+
+### 规则 5: 多窗口并发
+```
+✅ 多个 Claude Code 窗口可以使用 nlm（自动排队）
+✅ 第二个调用会等待第一个完成后再执行
+⚠️ 排队等待时会显示: "⏳ 另一个 nlm 实例正在运行，等待中..."
+```
+
+### 规则 6: 禁止危险操作（重要！）
+```
+🚫 绝对禁止: pkill -f "Google Chrome"
+🚫 绝对禁止: killall Chrome
+🚫 绝对禁止: 任何杀死 Chrome 进程的命令
+
+原因: Mac 上使用 CDP 模式，Chrome 需要保持运行
+      杀死 Chrome 会导致所有 nlm 操作失败，甚至导致 Claude Code 崩溃
+
+如果 nlm 连接失败，正确做法:
+  1. 清理残留文件: rm -f ~/.claude/skills/notebooklm/chrome_profile/Singleton*
+  2. 重新运行 nlm 命令，它会自动重启 CDP Chrome
 ```
 
 ---
@@ -93,7 +166,8 @@ source ~/.selfconda && nlm --headless <命令> [参数]
 | 命令 | 用途 | 必需参数 | 可选参数 |
 |------|------|----------|----------|
 | `chat` | 与笔记本对话 | `--notebook`, `--question` | |
-| `smart-chat` | **智能聊天（推荐）** | `--notebook`, `--question` | `--save-note` |
+| `smart-chat` | **智能聊天（推荐）** | `--notebook`, `--question` | `--save-note`, `--max-wait` |
+| `chat-history` | **查看对话历史记录** | `--notebook` | |
 
 ### STUDIO 面板命令
 | 命令 | 用途 | 必需参数 | 可选参数 |
@@ -104,6 +178,85 @@ source ~/.selfconda && nlm --headless <命令> [参数]
 ### 全局参数
 - `--headless`: 无头模式（不显示浏览器窗口）
 - `--browser {chrome,safari,webkit,firefox}`: 选择浏览器引擎
+
+### smart-chat 专用参数
+- `--max-wait <秒>`: 最大等待时间，默认 480 秒（8分钟）
+- `--save-note`: 自动将回答保存为笔记
+
+---
+
+## ⏱️ 超时配置（重要！）
+
+### 超时层级总览
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     超时层级（从外到内）                          │
+├─────────────────────────────────────────────────────────────────┤
+│  Claude Code Bash timeout     默认 120秒    ⚠️ 需要手动增加！    │
+│  ├── nlm --max-wait           默认 480秒    脚本等待回复时间      │
+│  │   ├── 阶段1: 等待生成开始   最多 60秒                         │
+│  │   ├── 阶段2: 文本稳定检测   最多 max_wait 秒                  │
+│  │   └── 阶段3: 额外确认       5秒                               │
+│  └── Playwright 操作超时      120秒        单个页面操作          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### ⚠️ Claude Code 调用必须设置 timeout！
+
+**问题**: Claude Code Bash 工具默认 timeout 只有 **120秒 (2分钟)**，而 nlm 内部等待时间是 **480秒 (8分钟)**。如果不设置，Bash 会提前终止导致回复被截断！
+
+**解决方案**: 调用 nlm 时必须设置 Bash timeout 参数：
+
+```
+推荐 timeout 值:
+- 简单问题: 300000  (5分钟)
+- 普通问题: 600000  (10分钟) ← 推荐默认值
+- 复杂问题: 900000  (15分钟)
+```
+
+### 回复完整性保证机制
+
+`smart-chat` 使用**文本稳定性检测**确保获取完整回复：
+
+| 阶段 | 时间 | 检测方式 |
+|------|------|----------|
+| 1. 等待生成开始 | 最多60秒 | 检测"停止生成"按钮出现 |
+| 2. 等待生成完成 | 最多 max_wait 秒 | **连续5秒文本不变 = 完成** |
+| 3. 额外确认 | 5秒 | 再次检查文本是否还在变化 |
+
+### 参数配置表
+
+| 层级 | 参数 | 默认值 | 建议值 | 说明 |
+|------|------|--------|--------|------|
+| Claude Code | Bash timeout | 120秒 | **600秒** | 必须手动设置！ |
+| nlm 脚本 | `--max-wait` | 480秒 | 480-600秒 | 等待回复生成 |
+| Playwright | 操作超时 | 120秒 | - | 单个页面操作 |
+
+### 使用示例
+
+```bash
+# Mac 系统
+~/.claude/skills/notebooklm/nlm-cdp.sh --headless smart-chat \
+    --notebook "笔记本名" \
+    --question "请详细解释..." \
+    --max-wait 600
+
+# Adam 系统（通过 ~/bin/nlm wrapper）
+~/bin/nlm --headless smart-chat \
+    --notebook "笔记本名" \
+    --question "请详细解释..." \
+    --max-wait 600
+```
+
+### Claude Code 调用模板
+
+当 Claude Code 调用 nlm 时，应使用以下格式：
+```
+工具: Bash
+timeout: 600000  # 10分钟，必须设置！
+command: nlm --headless smart-chat --notebook "xxx" --question "xxx"
+```
 
 ---
 

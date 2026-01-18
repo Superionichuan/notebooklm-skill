@@ -1417,8 +1417,19 @@ class NotebookLMAutomation:
             print(f"清除临时源时出错: {e}")
             return False
 
-    def smart_chat(self, notebook_name: str, question: str, ensure_chat_mode: bool = True) -> str:
-        """智能聊天 - 自动确保在聊天模式"""
+    def smart_chat(self, notebook_name: str, question: str, ensure_chat_mode: bool = True, max_wait: int = 480) -> str:
+        """
+        智能聊天 - 自动确保在聊天模式，可靠等待回复完成
+
+        Args:
+            notebook_name: 笔记本名称
+            question: 问题内容
+            ensure_chat_mode: 是否自动切换到聊天模式
+            max_wait: 最大等待时间（秒），默认480秒(8分钟)
+
+        Returns:
+            完整的回复内容
+        """
         if not self.open_notebook(notebook_name):
             return ""
 
@@ -1455,84 +1466,140 @@ class NotebookLMAutomation:
             self.page.wait_for_timeout(500)
             chat_input.press("Enter")
 
-            print("问题已发送，等待回复...")
+            print(f"问题已发送，等待回复（最多等待 {max_wait} 秒）...")
 
-            # 等待回复生成完成
-            max_wait = 90  # 最多等90秒
-            response_found = False
+            # === 阶段1: 等待回复开始生成 ===
+            print("等待 AI 开始生成回复...")
+            generation_started = False
+            for i in range(60):  # 最多等60秒开始生成
+                self.page.wait_for_timeout(1000)
+
+                # 检测"停止生成"按钮出现 = 开始生成
+                stop_btn_selectors = [
+                    'button:has-text("停止生成")',
+                    'button:has-text("Stop generating")',
+                    'button:has-text("Stop")',
+                    '[aria-label*="停止"]',
+                    '[aria-label*="Stop"]',
+                    'button[aria-label*="stop"]',
+                ]
+
+                for sel in stop_btn_selectors:
+                    el = self.page.query_selector(sel)
+                    if el and el.is_visible():
+                        generation_started = True
+                        print(f"AI 开始生成回复 ({i+1}秒)")
+                        break
+
+                if generation_started:
+                    break
+
+                # 也检查是否已经有回复内容（快速回复的情况）
+                response_el = self.page.query_selector('.response-content, [class*="assistant-message"], [data-message-role="assistant"]')
+                if response_el and response_el.is_visible():
+                    text = response_el.inner_text().strip()
+                    if text and len(text) > 20 and "Getting the context" not in text:
+                        generation_started = True
+                        print(f"检测到回复内容 ({i+1}秒)")
+                        break
+
+                if i % 10 == 0 and i > 0:
+                    print(f"等待生成开始... ({i}/60秒)")
+
+            if not generation_started:
+                print("⚠️ 未检测到生成开始，继续等待...")
+
+            # === 阶段2: 等待回复生成完成（核心修复） ===
+            # 使用文本稳定性检测：连续多次检测文本不变 = 生成完成
+            print("等待回复生成完成...")
+
+            last_text = ""
+            stable_count = 0
+            STABLE_THRESHOLD = 5  # 连续5次(5秒)文本不变认为完成
 
             for i in range(max_wait):
                 self.page.wait_for_timeout(1000)
 
-                # 检查是否还在生成中（多种指示器）
-                generating_indicators = [
+                # 方法1: 检查"停止生成"按钮是否消失
+                stop_btn_visible = False
+                stop_btn_selectors = [
                     'button:has-text("停止生成")',
+                    'button:has-text("Stop generating")',
                     'button:has-text("Stop")',
-                    '[aria-label*="停止"]',
-                    '[aria-label*="Stop"]',
-                    '.loading-indicator',
-                    '[class*="loading"]',
+                    '[aria-label*="停止生成"]',
                 ]
 
-                still_generating = False
-                for sel in generating_indicators:
+                for sel in stop_btn_selectors:
                     el = self.page.query_selector(sel)
                     if el and el.is_visible():
-                        still_generating = True
+                        stop_btn_visible = True
                         break
 
-                if not still_generating:
-                    # 检查是否有实际回复内容
-                    response_selectors = [
-                        '.message-content',
-                        '[class*="response"]',
-                        '[class*="answer"]',
-                        '[class*="chat-message"]',
-                        '[data-message-role="assistant"]',
-                    ]
+                # 方法2: 检查加载指示器
+                loading_visible = False
+                loading_selectors = [
+                    '.loading-indicator',
+                    '[class*="loading"]',
+                    '[class*="spinner"]',
+                    '[class*="generating"]',
+                ]
 
-                    for sel in response_selectors:
-                        msgs = self.page.query_selector_all(sel)
-                        if msgs and len(msgs) > 0:
-                            last = msgs[-1]
-                            text = last.inner_text().strip()
-                            # 过滤掉中间状态消息
-                            if text and len(text) > 50 and "Getting the context" not in text:
-                                response_found = True
-                                break
-
-                    if response_found:
+                for sel in loading_selectors:
+                    el = self.page.query_selector(sel)
+                    if el and el.is_visible():
+                        loading_visible = True
                         break
 
-                if i % 10 == 0 and i > 0:
-                    print(f"正在生成回复... ({i}/{max_wait}秒)")
+                # 方法3: 文本稳定性检测（最可靠）
+                current_text = self._get_latest_response_text()
 
-            self.page.wait_for_timeout(3000)  # 额外等待确保完成
+                if current_text and len(current_text) > 50:
+                    if current_text == last_text:
+                        stable_count += 1
+                    else:
+                        stable_count = 0
+                        last_text = current_text
 
-            # 获取最新回复 - 尝试多种选择器
-            response_selectors = [
-                '.message-content',
-                '[class*="response"]',
-                '[class*="answer"]',
-                '[class*="chat-message"]',
-                '[data-message-role="assistant"]',
-                '.chat-response',
-            ]
+                    # 判断生成完成的条件：
+                    # 1. 停止按钮消失 + 无加载指示器 + 文本稳定3次以上
+                    # 2. 或者文本稳定达到阈值（即使按钮检测失败）
+                    if (not stop_btn_visible and not loading_visible and stable_count >= 3) or stable_count >= STABLE_THRESHOLD:
+                        print(f"✅ 回复生成完成 ({i+1}秒, 稳定计数: {stable_count})")
+                        break
 
-            for sel in response_selectors:
-                messages = self.page.query_selector_all(sel)
-                if messages:
-                    # 从最后一条消息开始检查
-                    for msg in reversed(messages):
-                        text = msg.inner_text().strip()
-                        # 过滤掉无效响应
-                        if text and len(text) > 50 and "Getting the context" not in text:
-                            # 检查回复后的可用操作按钮
-                            self._check_response_actions()
-                            return text
+                # 如果还在生成，显示进度
+                if stop_btn_visible or loading_visible:
+                    stable_count = 0  # 重置稳定计数
+                    if i % 15 == 0 and i > 0:
+                        preview = current_text[:100] + "..." if current_text and len(current_text) > 100 else current_text or "(空)"
+                        print(f"正在生成... ({i}/{max_wait}秒) | 当前长度: {len(current_text) if current_text else 0} 字符")
+                elif i % 30 == 0 and i > 0:
+                    print(f"等待中... ({i}/{max_wait}秒) | 稳定计数: {stable_count}/{STABLE_THRESHOLD}")
+
+            # === 阶段3: 额外等待确保完成 ===
+            print("额外等待确保内容完整...")
+            self.page.wait_for_timeout(3000)
+
+            # 再次检查文本是否还在变化
+            final_check_text = self._get_latest_response_text()
+            self.page.wait_for_timeout(2000)
+            final_check_text2 = self._get_latest_response_text()
+
+            if final_check_text != final_check_text2:
+                print("检测到内容仍在更新，继续等待...")
+                self.page.wait_for_timeout(5000)
+
+            # === 阶段4: 获取完整回复 ===
+            final_response = self._get_latest_response_text()
+
+            if final_response:
+                print(f"✅ 获取到回复，长度: {len(final_response)} 字符")
+                self._check_response_actions()
+                return final_response
 
             # 备用方法：获取整个聊天区域的文本
-            chat_area = self.page.query_selector('[class*="chat-container"], [class*="conversation"]')
+            print("尝试备用方法获取回复...")
+            chat_area = self.page.query_selector('[class*="chat-container"], [class*="conversation"], main')
             if chat_area:
                 full_text = chat_area.inner_text()
                 # 尝试提取最后一段回复
@@ -1547,12 +1614,51 @@ class NotebookLMAutomation:
                         response_lines.append(line.strip())
 
                 if response_lines:
-                    return '\n'.join(response_lines)
+                    result = '\n'.join(response_lines)
+                    print(f"✅ 备用方法获取到回复，长度: {len(result)} 字符")
+                    return result
 
+            print("❌ 未能获取到回复")
             return ""
 
         except Exception as e:
             print(f"聊天时出错: {e}")
+            import traceback
+            traceback.print_exc()
+            return ""
+
+    def _get_latest_response_text(self) -> str:
+        """获取最新的回复文本（内部辅助方法）"""
+        try:
+            # 尝试多种选择器获取回复
+            response_selectors = [
+                # NotebookLM 特定选择器
+                '[data-message-role="assistant"]',
+                '.assistant-message',
+                '.response-content',
+                # 通用选择器
+                '.message-content',
+                '[class*="response"]',
+                '[class*="answer"]',
+                '[class*="chat-message"]',
+                '.chat-response',
+            ]
+
+            for sel in response_selectors:
+                messages = self.page.query_selector_all(sel)
+                if messages:
+                    # 从最后一条消息开始检查
+                    for msg in reversed(messages):
+                        try:
+                            text = msg.inner_text().strip()
+                            # 过滤掉无效响应
+                            if text and len(text) > 30 and "Getting the context" not in text:
+                                return text
+                        except:
+                            continue
+
+            return ""
+        except Exception as e:
             return ""
 
     def _check_response_actions(self):
@@ -1850,6 +1956,8 @@ def main():
     smart_chat_parser.add_argument("--notebook", required=True, help="笔记本名称")
     smart_chat_parser.add_argument("--question", required=True, help="问题")
     smart_chat_parser.add_argument("--save-note", action="store_true", help="自动保存回答为笔记")
+    smart_chat_parser.add_argument("--max-wait", type=int, default=480,
+                                   help="最大等待时间（秒），默认480秒(8分钟)")
 
     # import-source 命令 - 导入临时源（旧命令，保留兼容）
     import_parser = subparsers.add_parser("import-source", help="将临时搜索结果导入为永久源")
@@ -1996,7 +2104,8 @@ def main():
                     print("无法获取源信息")
 
         elif args.command == "smart-chat":
-            answer = nlm.smart_chat(args.notebook, args.question)
+            max_wait = getattr(args, 'max_wait', 480)
+            answer = nlm.smart_chat(args.notebook, args.question, max_wait=max_wait)
             if answer:
                 print(f"\n回答:\n{answer}")
                 # 如果指定了保存笔记

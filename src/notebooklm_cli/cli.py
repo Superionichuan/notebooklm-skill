@@ -8,8 +8,13 @@ import argparse
 import asyncio
 import platform
 import sys
+import fcntl
+import time
 from pathlib import Path
 from typing import Optional
+
+# 全局锁文件
+NLM_LOCK_FILE = Path("/tmp/nlm_global.lock")
 
 try:
     from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext
@@ -26,6 +31,95 @@ SKILL_DIR = Path.home() / ".claude" / "skills" / "notebooklm"
 ISOLATED_CHROME_PROFILE = SKILL_DIR / "chrome_profile"
 ISOLATED_WEBKIT_PROFILE = SKILL_DIR / "webkit_profile"
 ISOLATED_FIREFOX_PROFILE = SKILL_DIR / "firefox_profile"
+
+# 多实例 Profile 目录 - 支持多窗口并行运作
+MULTI_INSTANCE_PROFILES_DIR = SKILL_DIR / "profiles"
+
+
+def get_instance_profile(instance_name: str, browser_type: str = "chrome") -> Path:
+    """
+    获取指定实例的 Profile 路径
+
+    Args:
+        instance_name: 实例名称（如 "notebook_01", "notebook_02"）
+        browser_type: 浏览器类型
+
+    Returns:
+        Profile 目录路径
+    """
+    profile_dir = MULTI_INSTANCE_PROFILES_DIR / instance_name / browser_type
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    return profile_dir
+
+
+def notebook_to_instance(notebook_name: str) -> str:
+    """
+    根据笔记本名称自动生成实例名称
+
+    每个笔记本自动对应独立实例，确保多窗口操作不同笔记本时互不干扰
+
+    Args:
+        notebook_name: 笔记本名称
+
+    Returns:
+        实例名称（安全的目录名）
+    """
+    import hashlib
+    import re
+
+    # 提取笔记本名称的前缀（如 "01", "02"）
+    prefix_match = re.match(r'^(\d+)[.\s]', notebook_name)
+    if prefix_match:
+        prefix = f"nb_{prefix_match.group(1)}"
+    else:
+        # 使用名称的 hash 前8位
+        name_hash = hashlib.md5(notebook_name.encode()).hexdigest()[:8]
+        prefix = f"nb_{name_hash}"
+
+    return prefix
+
+
+def auto_init_instance_profile(instance_name: str, browser_type: str = "chrome") -> Path:
+    """
+    自动初始化实例 Profile
+
+    如果实例 Profile 不存在，自动从默认 Profile 复制
+
+    Args:
+        instance_name: 实例名称
+        browser_type: 浏览器类型
+
+    Returns:
+        Profile 目录路径
+    """
+    import shutil
+
+    profile_dir = MULTI_INSTANCE_PROFILES_DIR / instance_name / browser_type
+
+    # 如果 Profile 不存在或为空，从默认 Profile 复制
+    if not profile_dir.exists() or not any(profile_dir.iterdir()):
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        # 选择源 Profile
+        if browser_type == "chrome":
+            source_profile = ISOLATED_CHROME_PROFILE
+        elif browser_type in ("safari", "webkit"):
+            source_profile = ISOLATED_WEBKIT_PROFILE
+        else:
+            source_profile = ISOLATED_FIREFOX_PROFILE
+
+        # 复制源 Profile（如果存在）
+        if source_profile.exists() and any(source_profile.iterdir()):
+            for item in source_profile.iterdir():
+                dest = profile_dir / item.name
+                if item.is_dir():
+                    if not dest.exists():
+                        shutil.copytree(item, dest, dirs_exist_ok=True)
+                else:
+                    if not dest.exists():
+                        shutil.copy2(item, dest)
+
+    return profile_dir
 
 # 跨平台 Chrome 路径检测
 def get_chrome_path() -> Optional[str]:
@@ -73,17 +167,103 @@ USER_CHROME_PROFILE = get_user_chrome_profile()
 
 
 class NotebookLMAutomation:
-    def __init__(self, headless: bool = False, use_user_profile: bool = False, browser_type: str = "chrome"):
+    def __init__(self, headless: bool = False, use_user_profile: bool = False,
+                 browser_type: str = "chrome", instance: str = None,
+                 auto_instance: bool = True, target_notebook: str = None,
+                 cdp_url: str = None):
+        """
+        初始化 NotebookLM 自动化实例
+
+        Args:
+            headless: 是否无头模式
+            use_user_profile: 是否使用用户默认 Chrome Profile
+            browser_type: 浏览器类型 (chrome/safari/webkit/firefox)
+            instance: 实例名称，用于多实例并行运作（如 "nb_01", "nb_02"）
+                      每个实例使用独立的 Chrome Profile，互不干扰
+            auto_instance: 是否根据笔记本名称自动分配实例（默认开启）
+                          开启后，每个笔记本自动使用独立 Profile，多窗口互不干扰
+            target_notebook: 目标笔记本名称（用于自动实例分配）
+            cdp_url: CDP 连接 URL (用于连接已运行的 Chrome)
+        """
         self.headless = headless
         self.use_user_profile = use_user_profile
         self.browser_type = browser_type.lower()
+        self.auto_instance = auto_instance
+        self.target_notebook = target_notebook
+        self.cdp_url = cdp_url
+
+        # 自动实例分配：根据笔记本名称自动生成实例
+        if instance:
+            self.instance = instance
+        elif auto_instance and target_notebook:
+            self.instance = notebook_to_instance(target_notebook)
+        else:
+            self.instance = None
+
         self.playwright = None
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
 
+    def _clear_singleton_locks(self, profile_dir: Path):
+        """清除 Chrome Profile 的 SingletonLock 文件，避免冲突"""
+        try:
+            import glob
+            lock_patterns = [
+                profile_dir / "SingletonLock",
+                profile_dir / "SingletonSocket",
+                profile_dir / "SingletonCookie",
+            ]
+            for pattern in lock_patterns:
+                if pattern.exists():
+                    pattern.unlink()
+            # 也清除可能存在的通配符匹配
+            for lock_file in glob.glob(str(profile_dir / "Singleton*")):
+                try:
+                    Path(lock_file).unlink()
+                except:
+                    pass
+        except Exception as e:
+            pass  # 静默处理，锁文件可能不存在
+
+    def _acquire_lock(self, timeout: int = 30):
+        """获取全局锁，防止多个 nlm 实例同时运行
+
+        快速失败模式：最多等待 30 秒，超时则退出程序（而不是强制获取锁）
+        """
+        NLM_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self._lock_file = open(NLM_LOCK_FILE, 'w')
+
+        start_time = time.time()
+        while True:
+            try:
+                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return  # 成功获取锁
+            except (IOError, OSError):
+                elapsed = time.time() - start_time
+                if elapsed >= timeout:
+                    print("❌ 另一个 nlm 实例正在运行，请稍后再试")
+                    print("   提示: 等待当前操作完成后再执行")
+                    self._lock_file.close()
+                    import sys
+                    sys.exit(1)  # 快速失败，不强制获取锁
+                print(f"⏳ 另一个 nlm 实例正在运行，等待中... ({int(elapsed)}s)")
+                time.sleep(2)
+
+    def _release_lock(self):
+        """释放全局锁"""
+        if hasattr(self, '_lock_file') and self._lock_file:
+            try:
+                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+                self._lock_file.close()
+            except:
+                pass
+
     def start(self):
         """启动浏览器并初始化页面"""
+        # 获取全局锁，防止多个实例同时运行
+        self._acquire_lock()
+
         self.playwright = sync_playwright().start()
 
         # 根据浏览器类型选择引擎和 Profile
@@ -119,15 +299,26 @@ class NotebookLMAutomation:
                 user_data_dir = USER_CHROME_PROFILE
                 print(f"🔵 使用你的默认 Chrome Profile")
                 print(f"⚠️  请确保关闭其他 Chrome 窗口，否则可能冲突")
+            elif self.instance:
+                # 多实例模式：每个实例使用独立 Profile
+                # 自动初始化 Profile（如果不存在，从默认 Profile 复制）
+                user_data_dir = auto_init_instance_profile(self.instance, "chrome")
+                self._clear_singleton_locks(user_data_dir)
+                if self.auto_instance and self.target_notebook:
+                    print(f"🔷 自动实例: {self.instance} (笔记本: {self.target_notebook[:30]}...)")
+                else:
+                    print(f"🔷 多实例模式: {self.instance}")
+                print(f"📁 独立 Profile: {user_data_dir}")
             else:
                 user_data_dir = ISOLATED_CHROME_PROFILE
                 user_data_dir.mkdir(parents=True, exist_ok=True)
+                # 自动清除 SingletonLock，避免 "profile is in use" 错误
+                self._clear_singleton_locks(user_data_dir)
                 if CHROME_PATH:
                     print(f"🔵 使用隔离 Chrome Profile")
                 else:
                     print(f"🔵 使用 Playwright 内置 Chromium")
-
-            print(f"📁 Profile: {user_data_dir}")
+                print(f"📁 Profile: {user_data_dir}")
 
             # 构建启动参数
             browser_args = [
@@ -154,7 +345,13 @@ class NotebookLMAutomation:
             if CHROME_PATH:
                 launch_args["executable_path"] = CHROME_PATH
 
-            self.context = self.playwright.chromium.launch_persistent_context(**launch_args)
+            # 如果提供了 CDP URL，通过 CDP 连接已运行的 Chrome
+            if self.cdp_url:
+                print(f"🔗 通过 CDP 连接: {self.cdp_url}")
+                self.browser = self.playwright.chromium.connect_over_cdp(self.cdp_url)
+                self.context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
+            else:
+                self.context = self.playwright.chromium.launch_persistent_context(**launch_args)
 
         # 获取或创建页面
         if self.context.pages:
@@ -167,10 +364,18 @@ class NotebookLMAutomation:
 
     def close(self):
         """关闭浏览器"""
-        if self.context:
+        # CDP 模式下不关闭浏览器（保持 Chrome 运行供下次使用）
+        if self.cdp_url:
+            # 只关闭 context，不关闭 browser
+            pass
+        elif self.context:
             self.context.close()
+        if self.browser:
+            self.browser.close()
         if self.playwright:
             self.playwright.stop()
+        # 释放全局锁
+        self._release_lock()
 
     def ensure_logged_in(self) -> bool:
         """确保已登录 Google 账号"""
@@ -185,6 +390,68 @@ class NotebookLMAutomation:
         print(f"当前 URL: {current_url}")
 
         if "accounts.google.com" in current_url:
+            # 检查是否是"请选择账号"页面（多账号选择）
+            print("检测到 Google 账号页面，尝试自动选择账号...")
+            try:
+                # 使用 Playwright 原生点击（模拟真实鼠标事件）
+                account_selectors = [
+                    '[data-email]',
+                    '[data-identifier]',
+                    'div[data-authuser]',
+                    'li[data-authuser]',
+                    '.JDAKTe',  # Google 账号列表项
+                ]
+
+                clicked = False
+                for selector in account_selectors:
+                    try:
+                        element = self.page.locator(selector).first
+                        if element.count() > 0:
+                            print(f"找到账号元素: {selector}")
+                            element.click(force=True)
+                            clicked = True
+                            break
+                    except:
+                        continue
+
+                if not clicked:
+                    # 备用方案：通过文本查找
+                    email_locator = self.page.locator('text=@gmail.com').first
+                    if email_locator.count() > 0:
+                        print("通过 email 文本找到账号")
+                        email_locator.click(force=True)
+                        clicked = True
+
+                if clicked:
+                    print("已点击账号，等待跳转...")
+                    self.page.wait_for_timeout(5000)
+
+                    # 再次检查 URL
+                    current_url = self.page.url
+                    if "notebooklm.google.com" in current_url:
+                        print("已自动选择账号并登录")
+                        return True
+
+                    # 检查是否出现"验证身份"页面
+                    page_text = self.page.inner_text('body')
+                    if '验证身份' in page_text or 'Verify' in page_text:
+                        # 尝试点击"下一步"按钮
+                        next_btn = self.page.locator('button:has-text("下一步"), button:has-text("Next")').first
+                        if next_btn.count() > 0:
+                            print("检测到验证身份页面，点击下一步...")
+                            next_btn.click(force=True)
+                            self.page.wait_for_timeout(3000)
+
+                    if "accounts.google.com" not in self.page.url:
+                        print(f"登录进行中... 当前: {self.page.url}")
+                        self.page.wait_for_timeout(3000)
+                        if "notebooklm.google.com" in self.page.url:
+                            return True
+                else:
+                    print("未找到可点击的账号元素")
+            except Exception as e:
+                print(f"自动选择账号失败: {e}")
+
             print("\n" + "="*60)
             print("请在浏览器中登录你的 Google 账号")
             print("登录完成后，页面会自动跳转到 NotebookLM")
@@ -934,11 +1201,101 @@ class NotebookLMAutomation:
         获取搜索结果列表及其可用操作
 
         Returns:
-            搜索结果列表，每项包含 {title, can_import, can_remove}
+            搜索结果列表，每项包含 {title, can_import, can_remove, source_type}
         """
         results = []
         try:
-            # 查找搜索结果列表容器
+            # 点击查看后，搜索结果显示在左侧面板的 mat-checkbox 列表中
+            # 用 JavaScript 提取结果
+            data = self.page.evaluate('''() => {
+                const results = [];
+                const checkboxes = document.querySelectorAll("mat-checkbox");
+
+                checkboxes.forEach((cb, i) => {
+                    // 跳过"选择所有来源"的复选框
+                    let container = cb.parentElement;
+                    for (let j = 0; j < 5 && container; j++) {
+                        const text = container.innerText || "";
+                        // 检查是否包含来源类型标识
+                        if (text.includes("drive_pdf") || text.includes("web") ||
+                            text.includes("youtube") || text.includes("link") ||
+                            text.includes("PDF") || text.includes("http")) {
+
+                            // 解析文本，提取标题
+                            const lines = text.split("\\n").filter(l => l.trim());
+                            let sourceType = "unknown";
+                            let title = "";
+
+                            for (const line of lines) {
+                                const trimmed = line.trim();
+                                if (trimmed === "drive_pdf" || trimmed === "web" ||
+                                    trimmed === "youtube" || trimmed === "link") {
+                                    sourceType = trimmed;
+                                } else if (trimmed.length > 10 && !trimmed.startsWith("选择") &&
+                                           !trimmed.includes("来源") && title === "") {
+                                    title = trimmed;
+                                }
+                            }
+
+                            if (title) {
+                                results.push({
+                                    index: i,
+                                    title: title.substring(0, 100),
+                                    sourceType: sourceType,
+                                    checked: cb.classList.contains("mat-mdc-checkbox-checked")
+                                });
+                            }
+                            break;
+                        }
+                        container = container.parentElement;
+                    }
+                });
+                return results;
+            }''')
+
+            # 检查是否有"添加"按钮（表示可以导入）
+            add_btn = self.page.query_selector('button:has-text("添加")')
+            can_import = add_btn is not None and add_btn.is_visible()
+
+            for item in data:
+                result = {
+                    "title": item.get("title", ""),
+                    "source_type": item.get("sourceType", "unknown"),
+                    "can_import": can_import,
+                    "can_remove": True,  # 搜索结果都可以移除
+                    "checked": item.get("checked", False),
+                    "index": item.get("index", 0)
+                }
+                results.append(result)
+
+            if not results:
+                print("未找到搜索结果，尝试备用方法...")
+                # 备用方法：直接从面板文本提取
+                panel = self.page.query_selector('.source-panel')
+                if panel:
+                    text = panel.inner_text()
+                    lines = text.split('\n')
+                    for line in lines:
+                        line = line.strip()
+                        if len(line) > 20 and not any(skip in line for skip in
+                            ['选择', '来源', '添加', '删除', 'drive_pdf', 'web', 'youtube']):
+                            results.append({
+                                "title": line[:100],
+                                "source_type": "unknown",
+                                "can_import": can_import,
+                                "can_remove": True
+                            })
+
+            return results
+
+        except Exception as e:
+            print(f"获取搜索结果时出错: {e}")
+            return results
+
+    def _old_get_search_results_with_actions(self) -> list:
+        """旧版方法，保留作为参考"""
+        results = []
+        try:
             container_selectors = [
                 '.source-discovery-completed-source-list',
                 '[class*="source-discovery-completed"]',
@@ -955,7 +1312,6 @@ class NotebookLMAutomation:
                 print("未找到搜索结果容器")
                 return results
 
-            # 查找各个结果项
             result_items = container.query_selector_all('.shallow-research-title, [class*="source-info"]')
 
             for item in result_items:
@@ -964,7 +1320,6 @@ class NotebookLMAutomation:
                     if not title or len(title) < 5:
                         continue
 
-                    # 检查是否有导入/删除按钮
                     parent = item.evaluate_handle("el => el.parentElement")
 
                     result = {
@@ -973,7 +1328,6 @@ class NotebookLMAutomation:
                         "can_remove": False,
                     }
 
-                    # 查找相邻的操作按钮
                     import_btn = self.page.query_selector(f'button:has-text("添加"):near(:text("{title[:30]}"))')
                     remove_btn = self.page.query_selector(f'button:has-text("删除"):near(:text("{title[:30]}"))')
 
@@ -1092,7 +1446,7 @@ class NotebookLMAutomation:
             print(f"移除搜索结果时出错: {e}")
             return False
 
-    def search_sources(self, notebook_name: str, query: str, mode: str = "fast", source_type: str = "web", auto_clear: bool = True) -> list:
+    def search_sources(self, notebook_name: str, query: str, mode: str = "fast", source_type: str = "web", auto_clear: bool = True, timeout: int = None) -> list:
         """
         搜索新来源（完整工作流程）
 
@@ -1209,7 +1563,7 @@ class NotebookLMAutomation:
             print(f"正在{'深度' if mode == 'deep' else '快速'}搜索: {query}")
 
             # 步骤4: 等待搜索完成
-            max_wait = 180 if mode == "deep" else 60  # 深度研究最多等3分钟，快速1分钟
+            max_wait = 1800 if mode == "deep" else 1200  # deep=30分钟, fast=20分钟
             search_completed = False
 
             for i in range(max_wait):
@@ -1525,8 +1879,19 @@ class NotebookLMAutomation:
             print(f"清除临时源时出错: {e}")
             return False
 
-    def smart_chat(self, notebook_name: str, question: str, ensure_chat_mode: bool = True) -> str:
-        """智能聊天 - 自动确保在聊天模式"""
+    def smart_chat(self, notebook_name: str, question: str, ensure_chat_mode: bool = True, max_wait: int = 480) -> str:
+        """
+        智能聊天 - 自动确保在聊天模式，可靠等待回复完成
+
+        Args:
+            notebook_name: 笔记本名称
+            question: 问题内容
+            ensure_chat_mode: 是否自动切换到聊天模式
+            max_wait: 最大等待时间（秒），默认480秒(8分钟)
+
+        Returns:
+            完整的回复内容
+        """
         if not self.open_notebook(notebook_name):
             return ""
 
@@ -1563,84 +1928,139 @@ class NotebookLMAutomation:
             self.page.wait_for_timeout(500)
             chat_input.press("Enter")
 
-            print("问题已发送，等待回复...")
+            print(f"问题已发送，等待回复（最多等待 {max_wait} 秒）...")
 
-            # 等待回复生成完成
-            max_wait = 90  # 最多等90秒
-            response_found = False
+            # === 阶段1: 等待回复开始生成 ===
+            print("等待 AI 开始生成回复...")
+            generation_started = False
+            for i in range(60):  # 最多等60秒开始生成
+                self.page.wait_for_timeout(1000)
+
+                # 检测"停止生成"按钮出现 = 开始生成
+                stop_btn_selectors = [
+                    'button:has-text("停止生成")',
+                    'button:has-text("Stop generating")',
+                    'button:has-text("Stop")',
+                    '[aria-label*="停止"]',
+                    '[aria-label*="Stop"]',
+                    'button[aria-label*="stop"]',
+                ]
+
+                for sel in stop_btn_selectors:
+                    el = self.page.query_selector(sel)
+                    if el and el.is_visible():
+                        generation_started = True
+                        print(f"AI 开始生成回复 ({i+1}秒)")
+                        break
+
+                if generation_started:
+                    break
+
+                # 也检查是否已经有回复内容（快速回复的情况）
+                response_el = self.page.query_selector('.response-content, [class*="assistant-message"], [data-message-role="assistant"]')
+                if response_el and response_el.is_visible():
+                    text = response_el.inner_text().strip()
+                    if text and len(text) > 20 and "Getting the context" not in text:
+                        generation_started = True
+                        print(f"检测到回复内容 ({i+1}秒)")
+                        break
+
+                if i % 10 == 0 and i > 0:
+                    print(f"等待生成开始... ({i}/60秒)")
+
+            if not generation_started:
+                print("⚠️ 未检测到生成开始，继续等待...")
+
+            # === 阶段2: 等待回复生成完成（核心修复） ===
+            # 使用文本稳定性检测：连续多次检测文本不变 = 生成完成
+            print("等待回复生成完成...")
+
+            last_text = ""
+            stable_count = 0
+            STABLE_THRESHOLD = 5  # 连续5次(5秒)文本不变认为完成
 
             for i in range(max_wait):
                 self.page.wait_for_timeout(1000)
 
-                # 检查是否还在生成中（多种指示器）
-                generating_indicators = [
+                # 方法1: 检查"停止生成"按钮是否消失
+                stop_btn_visible = False
+                stop_btn_selectors = [
                     'button:has-text("停止生成")',
+                    'button:has-text("Stop generating")',
                     'button:has-text("Stop")',
-                    '[aria-label*="停止"]',
-                    '[aria-label*="Stop"]',
-                    '.loading-indicator',
-                    '[class*="loading"]',
+                    '[aria-label*="停止生成"]',
                 ]
 
-                still_generating = False
-                for sel in generating_indicators:
+                for sel in stop_btn_selectors:
                     el = self.page.query_selector(sel)
                     if el and el.is_visible():
-                        still_generating = True
+                        stop_btn_visible = True
                         break
 
-                if not still_generating:
-                    # 检查是否有实际回复内容
-                    response_selectors = [
-                        '.message-content',
-                        '[class*="response"]',
-                        '[class*="answer"]',
-                        '[class*="chat-message"]',
-                        '[data-message-role="assistant"]',
-                    ]
+                # 方法2: 检查加载指示器
+                loading_visible = False
+                loading_selectors = [
+                    '.loading-indicator',
+                    '[class*="loading"]',
+                    '[class*="spinner"]',
+                    '[class*="generating"]',
+                ]
 
-                    for sel in response_selectors:
-                        msgs = self.page.query_selector_all(sel)
-                        if msgs and len(msgs) > 0:
-                            last = msgs[-1]
-                            text = last.inner_text().strip()
-                            # 过滤掉中间状态消息
-                            if text and len(text) > 50 and "Getting the context" not in text:
-                                response_found = True
-                                break
-
-                    if response_found:
+                for sel in loading_selectors:
+                    el = self.page.query_selector(sel)
+                    if el and el.is_visible():
+                        loading_visible = True
                         break
 
-                if i % 10 == 0 and i > 0:
-                    print(f"正在生成回复... ({i}/{max_wait}秒)")
+                # 方法3: 文本稳定性检测（最可靠）
+                current_text = self._get_latest_response_text()
 
-            self.page.wait_for_timeout(3000)  # 额外等待确保完成
+                if current_text and len(current_text) > 50:
+                    if current_text == last_text:
+                        stable_count += 1
+                    else:
+                        stable_count = 0
+                        last_text = current_text
 
-            # 获取最新回复 - 尝试多种选择器
-            response_selectors = [
-                '.message-content',
-                '[class*="response"]',
-                '[class*="answer"]',
-                '[class*="chat-message"]',
-                '[data-message-role="assistant"]',
-                '.chat-response',
-            ]
+                    # 判断生成完成的条件：
+                    # 1. 停止按钮消失 + 无加载指示器 + 文本稳定3次以上
+                    # 2. 或者文本稳定达到阈值（即使按钮检测失败）
+                    if (not stop_btn_visible and not loading_visible and stable_count >= 3) or stable_count >= STABLE_THRESHOLD:
+                        print(f"✅ 回复生成完成 ({i+1}秒, 稳定计数: {stable_count})")
+                        break
 
-            for sel in response_selectors:
-                messages = self.page.query_selector_all(sel)
-                if messages:
-                    # 从最后一条消息开始检查
-                    for msg in reversed(messages):
-                        text = msg.inner_text().strip()
-                        # 过滤掉无效响应
-                        if text and len(text) > 50 and "Getting the context" not in text:
-                            # 检查回复后的可用操作按钮
-                            self._check_response_actions()
-                            return text
+                # 如果还在生成，显示进度
+                if stop_btn_visible or loading_visible:
+                    stable_count = 0  # 重置稳定计数
+                    if i % 15 == 0 and i > 0:
+                        print(f"正在生成... ({i}/{max_wait}秒) | 当前长度: {len(current_text) if current_text else 0} 字符")
+                elif i % 30 == 0 and i > 0:
+                    print(f"等待中... ({i}/{max_wait}秒) | 稳定计数: {stable_count}/{STABLE_THRESHOLD}")
+
+            # === 阶段3: 额外等待确保完成 ===
+            print("额外等待确保内容完整...")
+            self.page.wait_for_timeout(3000)
+
+            # 再次检查文本是否还在变化
+            final_check_text = self._get_latest_response_text()
+            self.page.wait_for_timeout(2000)
+            final_check_text2 = self._get_latest_response_text()
+
+            if final_check_text != final_check_text2:
+                print("检测到内容仍在更新，继续等待...")
+                self.page.wait_for_timeout(5000)
+
+            # === 阶段4: 获取完整回复 ===
+            final_response = self._get_latest_response_text()
+
+            if final_response:
+                print(f"✅ 获取到回复，长度: {len(final_response)} 字符")
+                self._check_response_actions()
+                return final_response
 
             # 备用方法：获取整个聊天区域的文本
-            chat_area = self.page.query_selector('[class*="chat-container"], [class*="conversation"]')
+            print("尝试备用方法获取回复...")
+            chat_area = self.page.query_selector('[class*="chat-container"], [class*="conversation"], main')
             if chat_area:
                 full_text = chat_area.inner_text()
                 # 尝试提取最后一段回复
@@ -1655,12 +2075,51 @@ class NotebookLMAutomation:
                         response_lines.append(line.strip())
 
                 if response_lines:
-                    return '\n'.join(response_lines)
+                    result = '\n'.join(response_lines)
+                    print(f"✅ 备用方法获取到回复，长度: {len(result)} 字符")
+                    return result
 
+            print("❌ 未能获取到回复")
             return ""
 
         except Exception as e:
             print(f"聊天时出错: {e}")
+            import traceback
+            traceback.print_exc()
+            return ""
+
+    def _get_latest_response_text(self) -> str:
+        """获取最新的回复文本（内部辅助方法）"""
+        try:
+            # 尝试多种选择器获取回复
+            response_selectors = [
+                # NotebookLM 特定选择器
+                '[data-message-role="assistant"]',
+                '.assistant-message',
+                '.response-content',
+                # 通用选择器
+                '.message-content',
+                '[class*="response"]',
+                '[class*="answer"]',
+                '[class*="chat-message"]',
+                '.chat-response',
+            ]
+
+            for sel in response_selectors:
+                messages = self.page.query_selector_all(sel)
+                if messages:
+                    # 从最后一条消息开始检查
+                    for msg in reversed(messages):
+                        try:
+                            text = msg.inner_text().strip()
+                            # 过滤掉无效响应
+                            if text and len(text) > 30 and "Getting the context" not in text:
+                                return text
+                        except:
+                            continue
+
+            return ""
+        except Exception as e:
             return ""
 
     def _check_response_actions(self):
@@ -1798,6 +2257,136 @@ class NotebookLMAutomation:
         except Exception as e:
             print(f"保存笔记时出错: {e}")
             return False
+
+    def get_chat_history(self, notebook_name: str, limit: int = 50) -> list:
+        """
+        获取笔记本的聊天历史记录
+
+        Args:
+            notebook_name: 笔记本名称
+            limit: 最多返回多少条记录
+
+        Returns:
+            聊天记录列表，每条包含 {role: 'user'|'assistant', content: str}
+        """
+        if not self.open_notebook(notebook_name):
+            return []
+
+        try:
+            self.page.wait_for_timeout(3000)
+
+            history = []
+
+            # 方法1: 从聊天区域提取消息
+            # NotebookLM 的聊天消息通常包含用户问题和AI回答
+            chat_selectors = [
+                '[class*="chat"]',
+                '[class*="message"]',
+                '[class*="conversation"]',
+            ]
+
+            for selector in chat_selectors:
+                elements = self.page.query_selector_all(selector)
+                if elements:
+                    for el in elements:
+                        try:
+                            text = el.inner_text().strip()
+                            if text and len(text) > 10:
+                                # 过滤掉UI元素
+                                skip_patterns = [
+                                    'thumb_up', 'thumb_down', 'copy_all', 'keep_pin',
+                                    '保存到笔记', '正在加载', 'more_vert', 'tunemore_vert',
+                                    '搜索结果', '个来源', 'arrow_forward',
+                                ]
+
+                                is_ui = False
+                                for pattern in skip_patterns:
+                                    if pattern in text and len(text) < 50:
+                                        is_ui = True
+                                        break
+
+                                if not is_ui and text not in [h.get('content', '') for h in history]:
+                                    # 简单区分用户和AI消息（AI消息通常更长）
+                                    role = 'assistant' if len(text) > 200 else 'user'
+                                    history.append({'role': role, 'content': text})
+                        except:
+                            pass
+
+                    if history:
+                        break
+
+            # 方法2: 如果方法1失败，从整个对话区域解析
+            if not history:
+                try:
+                    # 获取中间对话面板的全部文本
+                    body_text = self.page.inner_text('body')
+                    lines = body_text.split('\n')
+
+                    current_message = []
+
+                    # UI 元素过滤
+                    ui_elements = [
+                        'thumb_up', 'thumb_down', 'copy_all', 'keep_pin', 'more_vert',
+                        '保存到笔记', '正在加载', '搜索结果', 'arrow_forward', 'tunemore_vert',
+                        '来源', 'Sources', 'Studio', 'Notes', '笔记', '对话',
+                        '添加来源', 'Add source', '创建笔记本', '设置', 'PRO',
+                        '收起来源面板', '展开', 'Deep Research', '获取深度报告',
+                    ]
+
+                    for line in lines:
+                        line = line.strip()
+                        if not line:
+                            continue
+
+                        # 跳过UI元素
+                        is_ui = False
+                        for ui in ui_elements:
+                            if line == ui or (len(line) < 30 and ui in line):
+                                is_ui = True
+                                break
+
+                        if is_ui:
+                            continue
+
+                        # 跳过太短的行（通常是图标）
+                        if len(line) < 5:
+                            continue
+
+                        # 检测是否是新消息的开始
+                        # 用户消息通常较短，以问号结尾
+                        if line.endswith('?') or line.endswith('？'):
+                            if current_message:
+                                content = '\n'.join(current_message)
+                                if len(content) > 20:
+                                    history.append({'role': 'assistant', 'content': content})
+                                current_message = []
+                            history.append({'role': 'user', 'content': line})
+                        else:
+                            current_message.append(line)
+
+                    # 处理最后一条消息
+                    if current_message:
+                        content = '\n'.join(current_message)
+                        if len(content) > 20:
+                            history.append({'role': 'assistant', 'content': content})
+
+                except Exception as e:
+                    print(f"解析聊天历史时出错: {e}")
+
+            # 去重和限制数量
+            seen = set()
+            unique_history = []
+            for msg in history:
+                content_hash = hash(msg['content'][:100])
+                if content_hash not in seen:
+                    seen.add(content_hash)
+                    unique_history.append(msg)
+
+            return unique_history[:limit]
+
+        except Exception as e:
+            print(f"获取聊天历史时出错: {e}")
+            return []
 
     def delete_source(self, notebook_name: str, source_name: str) -> bool:
         """删除笔记本中的指定源"""
@@ -1958,6 +2547,7 @@ def main():
     smart_chat_parser.add_argument("--notebook", required=True, help="笔记本名称")
     smart_chat_parser.add_argument("--question", required=True, help="问题")
     smart_chat_parser.add_argument("--save-note", action="store_true", help="自动保存回答为笔记")
+    smart_chat_parser.add_argument("--max-wait", type=int, default=480, help="最大等待时间（秒），默认480秒(8分钟)")
 
     # import-source 命令 - 导入临时源（旧命令，保留兼容）
     import_parser = subparsers.add_parser("import-source", help="将临时搜索结果导入为永久源")
@@ -1972,12 +2562,26 @@ def main():
     detect_state_parser = subparsers.add_parser("detect-search-state", help="检测搜索状态(READY/PENDING_RESULTS)")
     detect_state_parser.add_argument("--notebook", required=True, help="笔记本名称")
 
+    # chat-history 命令 - 查看聊天历史
+    history_parser = subparsers.add_parser("chat-history", help="查看笔记本的聊天历史记录")
+    history_parser.add_argument("--notebook", required=True, help="笔记本名称")
+    history_parser.add_argument("--limit", type=int, default=20, help="最多显示多少条记录 (默认20)")
+    history_parser.add_argument("--format", choices=["text", "json"], default="text", help="输出格式 (默认text)")
+
     # 通用参数
     parser.add_argument("--headless", action="store_true", help="无头模式运行")
     parser.add_argument("--user-profile", action="store_true",
                         help="使用你的默认 Chrome Profile（需关闭其他 Chrome 窗口）")
     parser.add_argument("--browser", choices=["chrome", "safari", "webkit", "firefox"],
                         default="chrome", help="选择浏览器引擎 (默认 chrome 隔离 Profile，不影响你的浏览器)")
+    parser.add_argument("--instance", type=str, default=None,
+                        help="手动指定实例名称（如 nb_01）。默认自动根据笔记本名称分配实例")
+    parser.add_argument("--no-auto-instance", action="store_true",
+                        help="禁用自动实例分配，使用共享 Profile（可能导致多窗口冲突）")
+    parser.add_argument("--cdp-url", type=str, default=None,
+                        help="通过 CDP 连接已运行的 Chrome (如 http://127.0.0.1:9222)")
+    parser.add_argument("--timeout", type=int, default=None,
+                        help="自定义超时时间（秒）。覆盖默认值：chat=480, fast=1200, deep=1800")
 
     args = parser.parse_args()
 
@@ -1985,10 +2589,20 @@ def main():
         parser.print_help()
         return
 
+    # 获取目标笔记本名称（用于自动实例分配）
+    target_notebook = getattr(args, 'notebook', None)
+
+    # 自动实例分配：默认开启，除非指定 --no-auto-instance
+    auto_instance = not getattr(args, 'no_auto_instance', False)
+
     nlm = NotebookLMAutomation(
         headless=args.headless,
         use_user_profile=getattr(args, 'user_profile', False),
-        browser_type=args.browser
+        browser_type=args.browser,
+        instance=args.instance,
+        auto_instance=auto_instance,
+        target_notebook=target_notebook,
+        cdp_url=getattr(args, 'cdp_url', None)
     )
 
     try:
@@ -2022,9 +2636,12 @@ def main():
             nlm.generate_audio(args.notebook, args.output)
 
         elif args.command == "chat":
-            answer = nlm.chat(args.notebook, args.question)
+            # chat 统一使用 smart_chat 实现，更可靠
+            answer = nlm.smart_chat(args.notebook, args.question)
             if answer:
                 print(f"\n回答:\n{answer}")
+            else:
+                print("未获取到回复")
 
         elif args.command == "sources":
             sources = nlm.list_sources(args.notebook)
@@ -2043,7 +2660,7 @@ def main():
 
         elif args.command == "search-sources":
             source_type = getattr(args, 'source_type', 'web')
-            results = nlm.search_sources(args.notebook, args.query, args.mode, source_type)
+            results = nlm.search_sources(args.notebook, args.query, args.mode, source_type, timeout=getattr(args, 'timeout', None))
             if results:
                 print(f"\n搜索结果 (来源类型: {source_type}, 模式: {args.mode}):")
                 for i, name in enumerate(results, 1):
@@ -2104,7 +2721,7 @@ def main():
                     print("无法获取源信息")
 
         elif args.command == "smart-chat":
-            answer = nlm.smart_chat(args.notebook, args.question)
+            answer = nlm.smart_chat(args.notebook, args.question, max_wait=getattr(args, "max_wait", 480))
             if answer:
                 print(f"\n回答:\n{answer}")
                 # 如果指定了保存笔记
@@ -2146,6 +2763,28 @@ def main():
                     print("  操作: 使用 clear-search 命令清除，或 view-results 查看并导入/移除")
                 else:
                     print("  说明: 未知状态，可能需要刷新页面")
+
+        elif args.command == "chat-history":
+            history = nlm.get_chat_history(args.notebook, args.limit)
+            if history:
+                output_format = getattr(args, 'format', 'text')
+                if output_format == 'json':
+                    import json
+                    print(json.dumps(history, ensure_ascii=False, indent=2))
+                else:
+                    print(f"\n聊天历史记录 ({len(history)} 条):")
+                    print("=" * 60)
+                    for i, msg in enumerate(history, 1):
+                        role_display = "👤 用户" if msg['role'] == 'user' else "🤖 助手"
+                        content = msg['content']
+                        # 截断过长的内容
+                        if len(content) > 500:
+                            content = content[:500] + "..."
+                        print(f"\n[{i}] {role_display}:")
+                        print(f"{content}")
+                        print("-" * 40)
+            else:
+                print("没有找到聊天记录")
 
     except KeyboardInterrupt:
         print("\n用户中断")
