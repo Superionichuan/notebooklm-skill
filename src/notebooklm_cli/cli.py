@@ -2259,7 +2259,7 @@ class NotebookLMAutomation:
             print(f"保存笔记时出错: {e}")
             return False
 
-    def get_chat_history(self, notebook_name: str, limit: int = 50, round_num: int = None) -> list:
+    def get_chat_history(self, notebook_name: str, limit: int = 50, round_num: int = None, load_all: bool = False) -> list:
         """
         获取笔记本的聊天历史记录
 
@@ -2267,6 +2267,7 @@ class NotebookLMAutomation:
             notebook_name: 笔记本名称
             limit: 最多返回多少条记录
             round_num: 如果指定，只返回该轮次的完整问答
+            load_all: 是否滚动加载完整历史（默认False=快速模式）
 
         Returns:
             聊天记录列表，每条包含 {round: int, role: 'user'|'assistant', content: str}
@@ -2278,17 +2279,33 @@ class NotebookLMAutomation:
             self.page.wait_for_timeout(3000)
             history = []
 
-            # 尝试滚动加载更多历史 - 使用 .chat-panel-content
+            # 智能滚动加载
+            # - load_all=True: 加载全部历史
+            # - round_num 指定: 滚动加载直到足够
+            # - 默认: 不滚动，快速返回可见部分
             chat_container = self.page.query_selector('.chat-panel-content')
-            if chat_container:
-                # 先滚动到顶部加载所有历史
-                for _ in range(20):  # 最多滚动 20 次
-                    prev_scroll = chat_container.evaluate("el => el.scrollTop")
+            if chat_container and (load_all or round_num):
+                prev_height = 0
+                stable_count = 0
+                for i in range(30):  # 最多 30 次滚动
                     chat_container.evaluate("el => el.scrollTop = 0")
-                    self.page.wait_for_timeout(800)
-                    curr_scroll = chat_container.evaluate("el => el.scrollTop")
-                    if curr_scroll == 0 and prev_scroll == 0:
-                        break  # 已经在顶部
+                    self.page.wait_for_timeout(500)  # 等待内容加载
+                    curr_height = chat_container.evaluate("el => el.scrollHeight")
+
+                    # 如果指定了轮次且不是 load_all，检查是否已加载足够
+                    if round_num and not load_all:
+                        msg_count = len(self.page.query_selector_all('[class*="message-content"]'))
+                        if msg_count >= round_num * 2 + 10:  # 多加载一些余量
+                            break
+
+                    # 检测是否还有新内容加载
+                    if curr_height == prev_height:
+                        stable_count += 1
+                        if stable_count >= 5:  # 连续5次无增长才停止
+                            break
+                    else:
+                        stable_count = 0
+                    prev_height = curr_height
 
             # 获取所有消息元素
             all_messages = self.page.query_selector_all('[class*="message"], [class*="chat"]')
@@ -2543,6 +2560,7 @@ def main():
     history_parser.add_argument("--notebook", required=True, help="笔记本名称")
     history_parser.add_argument("--round", type=int, help="查看指定轮次的完整问答")
     history_parser.add_argument("--last", action="store_true", help="快速查看最后一轮问答")
+    history_parser.add_argument("--all", action="store_true", help="加载完整历史（滚动加载所有记录）")
     history_parser.add_argument("--limit", type=int, default=20, help="最多显示多少条记录 (默认20)")
     history_parser.add_argument("--format", choices=["text", "json"], default="text", help="输出格式 (默认text)")
 
@@ -2745,15 +2763,16 @@ def main():
         elif args.command == "chat-history":
             round_num = getattr(args, 'round', None)
             use_last = getattr(args, 'last', False)
+            load_all = getattr(args, 'all', False)
 
             # 如果使用 --last，先获取列表找到最后一轮
             if use_last and not round_num:
-                list_history = nlm.get_chat_history(args.notebook, args.limit, None)
+                list_history = nlm.get_chat_history(args.notebook, args.limit, None, load_all)
                 if list_history:
                     round_num = max(msg['round'] for msg in list_history)
                     print(f"(自动选择最后一轮: 第 {round_num} 轮)")
 
-            history = nlm.get_chat_history(args.notebook, args.limit, round_num)
+            history = nlm.get_chat_history(args.notebook, args.limit, round_num, load_all)
             if history:
                 output_format = getattr(args, 'format', 'text')
                 if output_format == 'json':
@@ -2770,8 +2789,11 @@ def main():
                     print("\n" + "=" * 60)
                 else:
                     # 列表模式：只显示问题
-                    print(f"\n=== 最近 {len(history)} 轮对话 ===")
-                    print("(页面可见部分，更早的历史需滚动加载)")
+                    if load_all:
+                        print(f"\n=== 全部 {len(history)} 轮对话 ===")
+                    else:
+                        print(f"\n=== 最近 {len(history)} 轮对话 ===")
+                        print("(使用 --all 加载完整历史)")
                     print("使用 --round N 或 --last 查看完整问答\n")
                     for msg in history:
                         print(f"[{msg['round']}] {msg['content']}")
