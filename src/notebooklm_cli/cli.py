@@ -2339,11 +2339,10 @@ class NotebookLMAutomation:
                     if r["assistant"]:
                         history.append({"round": round_num, "role": "assistant", "content": r["assistant"]})
             else:
-                # 列表模式：只返回问题预览
+                # 列表模式：返回完整问题
                 for i, r in enumerate(rounds[:limit], 1):
                     if r["user"]:
-                        preview = r["user"][:80] + "..." if len(r["user"]) > 80 else r["user"]
-                        history.append({"round": i, "role": "user", "content": preview})
+                        history.append({"round": i, "role": "user", "content": r["user"]})
 
             return history
 
@@ -2531,6 +2530,7 @@ def main():
     history_parser = subparsers.add_parser("chat-history", help="查看笔记本的聊天历史记录")
     history_parser.add_argument("--notebook", required=True, help="笔记本名称")
     history_parser.add_argument("--round", type=int, help="查看指定轮次的完整问答")
+    history_parser.add_argument("--last", action="store_true", help="快速查看最后一轮问答")
     history_parser.add_argument("--limit", type=int, default=20, help="最多显示多少条记录 (默认20)")
     history_parser.add_argument("--format", choices=["text", "json"], default="text", help="输出格式 (默认text)")
 
@@ -2732,6 +2732,15 @@ def main():
 
         elif args.command == "chat-history":
             round_num = getattr(args, 'round', None)
+            use_last = getattr(args, 'last', False)
+
+            # 如果使用 --last，先获取列表找到最后一轮
+            if use_last and not round_num:
+                list_history = nlm.get_chat_history(args.notebook, args.limit, None)
+                if list_history:
+                    round_num = max(msg['round'] for msg in list_history)
+                    print(f"(自动选择最后一轮: 第 {round_num} 轮)")
+
             history = nlm.get_chat_history(args.notebook, args.limit, round_num)
             if history:
                 output_format = getattr(args, 'format', 'text')
@@ -2749,8 +2758,9 @@ def main():
                     print("\n" + "=" * 60)
                 else:
                     # 列表模式：只显示问题
-                    print(f"\n=== 聊天历史 ({len(history)} 轮) ===")
-                    print("使用 --round N 查看第 N 轮的完整问答\n")
+                    print(f"\n=== 最近 {len(history)} 轮对话 ===")
+                    print("(页面可见部分，更早的历史需滚动加载)")
+                    print("使用 --round N 或 --last 查看完整问答\n")
                     for msg in history:
                         print(f"[{msg['round']}] {msg['content']}")
             else:
