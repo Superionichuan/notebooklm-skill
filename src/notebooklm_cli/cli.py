@@ -2259,134 +2259,98 @@ class NotebookLMAutomation:
             print(f"保存笔记时出错: {e}")
             return False
 
-    def get_chat_history(self, notebook_name: str, limit: int = 50) -> list:
+    def get_chat_history(self, notebook_name: str, limit: int = 50, round_num: int = None) -> list:
         """
         获取笔记本的聊天历史记录
 
         Args:
             notebook_name: 笔记本名称
             limit: 最多返回多少条记录
+            round_num: 如果指定，只返回该轮次的完整问答
 
         Returns:
-            聊天记录列表，每条包含 {role: 'user'|'assistant', content: str}
+            聊天记录列表，每条包含 {round: int, role: 'user'|'assistant', content: str}
         """
         if not self.open_notebook(notebook_name):
             return []
 
         try:
             self.page.wait_for_timeout(3000)
-
             history = []
 
-            # 方法1: 从聊天区域提取消息
-            # NotebookLM 的聊天消息通常包含用户问题和AI回答
-            chat_selectors = [
-                '[class*="chat"]',
-                '[class*="message"]',
-                '[class*="conversation"]',
-            ]
+            # 获取所有消息元素
+            all_messages = self.page.query_selector_all('[class*="message"], [class*="chat"]')
 
-            for selector in chat_selectors:
-                elements = self.page.query_selector_all(selector)
-                if elements:
-                    for el in elements:
-                        try:
-                            text = el.inner_text().strip()
-                            if text and len(text) > 10:
-                                # 过滤掉UI元素
-                                skip_patterns = [
-                                    'thumb_up', 'thumb_down', 'copy_all', 'keep_pin',
-                                    '保存到笔记', '正在加载', 'more_vert', 'tunemore_vert',
-                                    '搜索结果', '个来源', 'arrow_forward',
-                                ]
+            rounds = []  # 存储所有轮次
+            current_round = {"user": None, "assistant": None}
 
-                                is_ui = False
-                                for pattern in skip_patterns:
-                                    if pattern in text and len(text) < 50:
-                                        is_ui = True
-                                        break
-
-                                if not is_ui and text not in [h.get('content', '') for h in history]:
-                                    # 简单区分用户和AI消息（AI消息通常更长）
-                                    role = 'assistant' if len(text) > 200 else 'user'
-                                    history.append({'role': role, 'content': text})
-                        except:
-                            pass
-
-                    if history:
-                        break
-
-            # 方法2: 如果方法1失败，从整个对话区域解析
-            if not history:
+            for el in all_messages:
                 try:
-                    # 获取中间对话面板的全部文本
-                    body_text = self.page.inner_text('body')
-                    lines = body_text.split('\n')
+                    text = el.evaluate("el => el.textContent").strip()
+                    if not text or len(text) < 15:
+                        continue
 
-                    current_message = []
+                    # 过滤UI元素
+                    skip_patterns = ["thumb_up", "thumb_down", "copy_all", "more_vert",
+                                   "搜索结果", "个来源", "保存到笔记", "arrow_forward",
+                                   "tunemore_vert", "📄", "对话"]
+                    is_ui = any(p in text[:50] for p in skip_patterns)
+                    if is_ui and len(text) < 200:
+                        continue
 
-                    # UI 元素过滤
-                    ui_elements = [
-                        'thumb_up', 'thumb_down', 'copy_all', 'keep_pin', 'more_vert',
-                        '保存到笔记', '正在加载', '搜索结果', 'arrow_forward', 'tunemore_vert',
-                        '来源', 'Sources', 'Studio', 'Notes', '笔记', '对话',
-                        '添加来源', 'Add source', '创建笔记本', '设置', 'PRO',
-                        '收起来源面板', '展开', 'Deep Research', '获取深度报告',
-                    ]
+                    # 判断是问题还是回答
+                    is_question = (len(text) < 500 and
+                                 ("?" in text or "？" in text or
+                                  text.endswith("...") or
+                                  "请" in text[:20] or
+                                  "什么" in text or "如何" in text or "为什么" in text))
 
-                    for line in lines:
-                        line = line.strip()
-                        if not line:
-                            continue
+                    if is_question or (len(text) < 300 and current_round["user"] is None):
+                        # 这是一个问题
+                        if current_round["user"] is not None:
+                            # 保存上一轮
+                            if current_round["assistant"]:
+                                rounds.append(current_round.copy())
+                            current_round = {"user": None, "assistant": None}
+                        current_round["user"] = text
+                    elif len(text) > 200:
+                        # 这是一个回答
+                        if current_round["user"] is not None:
+                            current_round["assistant"] = text
+                            rounds.append(current_round.copy())
+                            current_round = {"user": None, "assistant": None}
+                        elif not rounds:
+                            current_round["assistant"] = text
 
-                        # 跳过UI元素
-                        is_ui = False
-                        for ui in ui_elements:
-                            if line == ui or (len(line) < 30 and ui in line):
-                                is_ui = True
-                                break
+                except Exception:
+                    continue
 
-                        if is_ui:
-                            continue
+            # 添加最后一轮（如果有）
+            if current_round["user"] or current_round["assistant"]:
+                rounds.append(current_round)
 
-                        # 跳过太短的行（通常是图标）
-                        if len(line) < 5:
-                            continue
+            # 根据模式返回数据
+            if round_num is not None:
+                # 详情模式：返回指定轮次的完整问答
+                if 1 <= round_num <= len(rounds):
+                    r = rounds[round_num - 1]
+                    if r["user"]:
+                        history.append({"round": round_num, "role": "user", "content": r["user"]})
+                    if r["assistant"]:
+                        history.append({"round": round_num, "role": "assistant", "content": r["assistant"]})
+            else:
+                # 列表模式：只返回问题预览
+                for i, r in enumerate(rounds[:limit], 1):
+                    if r["user"]:
+                        preview = r["user"][:80] + "..." if len(r["user"]) > 80 else r["user"]
+                        history.append({"round": i, "role": "user", "content": preview})
 
-                        # 检测是否是新消息的开始
-                        # 用户消息通常较短，以问号结尾
-                        if line.endswith('?') or line.endswith('？'):
-                            if current_message:
-                                content = '\n'.join(current_message)
-                                if len(content) > 20:
-                                    history.append({'role': 'assistant', 'content': content})
-                                current_message = []
-                            history.append({'role': 'user', 'content': line})
-                        else:
-                            current_message.append(line)
-
-                    # 处理最后一条消息
-                    if current_message:
-                        content = '\n'.join(current_message)
-                        if len(content) > 20:
-                            history.append({'role': 'assistant', 'content': content})
-
-                except Exception as e:
-                    print(f"解析聊天历史时出错: {e}")
-
-            # 去重和限制数量
-            seen = set()
-            unique_history = []
-            for msg in history:
-                content_hash = hash(msg['content'][:100])
-                if content_hash not in seen:
-                    seen.add(content_hash)
-                    unique_history.append(msg)
-
-            return unique_history[:limit]
+            return history
 
         except Exception as e:
             print(f"获取聊天历史时出错: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
     def delete_source(self, notebook_name: str, source_name: str) -> bool:
@@ -2566,6 +2530,7 @@ def main():
     # chat-history 命令 - 查看聊天历史
     history_parser = subparsers.add_parser("chat-history", help="查看笔记本的聊天历史记录")
     history_parser.add_argument("--notebook", required=True, help="笔记本名称")
+    history_parser.add_argument("--round", type=int, help="查看指定轮次的完整问答")
     history_parser.add_argument("--limit", type=int, default=20, help="最多显示多少条记录 (默认20)")
     history_parser.add_argument("--format", choices=["text", "json"], default="text", help="输出格式 (默认text)")
 
@@ -2766,24 +2731,28 @@ def main():
                     print("  说明: 未知状态，可能需要刷新页面")
 
         elif args.command == "chat-history":
-            history = nlm.get_chat_history(args.notebook, args.limit)
+            round_num = getattr(args, 'round', None)
+            history = nlm.get_chat_history(args.notebook, args.limit, round_num)
             if history:
                 output_format = getattr(args, 'format', 'text')
                 if output_format == 'json':
                     import json
                     print(json.dumps(history, ensure_ascii=False, indent=2))
-                else:
-                    print(f"\n聊天历史记录 ({len(history)} 条):")
+                elif round_num:
+                    # 详情模式：显示完整问答
+                    print(f"\n=== 第 {round_num} 轮完整问答 ===")
                     print("=" * 60)
-                    for i, msg in enumerate(history, 1):
-                        role_display = "👤 用户" if msg['role'] == 'user' else "🤖 助手"
-                        content = msg['content']
-                        # 截断过长的内容
-                        if len(content) > 500:
-                            content = content[:500] + "..."
-                        print(f"\n[{i}] {role_display}:")
-                        print(f"{content}")
-                        print("-" * 40)
+                    for msg in history:
+                        role_icon = "👤 问题" if msg["role"] == "user" else "🤖 回答"
+                        print(f"\n{role_icon}:")
+                        print(msg["content"])
+                    print("\n" + "=" * 60)
+                else:
+                    # 列表模式：只显示问题
+                    print(f"\n=== 聊天历史 ({len(history)} 轮) ===")
+                    print("使用 --round N 查看第 N 轮的完整问答\n")
+                    for msg in history:
+                        print(f"[{msg['round']}] {msg['content']}")
             else:
                 print("没有找到聊天记录")
 
