@@ -2278,6 +2278,18 @@ class NotebookLMAutomation:
             self.page.wait_for_timeout(3000)
             history = []
 
+            # 尝试滚动加载更多历史 - 使用 .chat-panel-content
+            chat_container = self.page.query_selector('.chat-panel-content')
+            if chat_container:
+                # 先滚动到顶部加载所有历史
+                for _ in range(20):  # 最多滚动 20 次
+                    prev_scroll = chat_container.evaluate("el => el.scrollTop")
+                    chat_container.evaluate("el => el.scrollTop = 0")
+                    self.page.wait_for_timeout(800)
+                    curr_scroll = chat_container.evaluate("el => el.scrollTop")
+                    if curr_scroll == 0 and prev_scroll == 0:
+                        break  # 已经在顶部
+
             # 获取所有消息元素
             all_messages = self.page.query_selector_all('[class*="message"], [class*="chat"]')
 
