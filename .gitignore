@@ -26,3 +26,5 @@ build/
 # IDE
 .vscode/
 .idea/
+profiles/
+instances.yaml

@@ -2111,7 +2111,8 @@ class NotebookLMAutomation:
                     # 从最后一条消息开始检查
                     for msg in reversed(messages):
                         try:
-                            text = msg.inner_text().strip()
+                            # 用 textContent 避免 CSS 截断
+                            text = msg.evaluate("el => el.textContent").strip()
                             # 过滤掉无效响应
                             if text and len(text) > 30 and "Getting the context" not in text:
                                 return text
